@@ -2,17 +2,17 @@
   "mcpServers": {
     "dm20-protocol": {
       "type": "stdio",
-      "command": "uv",
+      "command": "/home/sta-aurocon/.local/bin/uv",
       "args": [
         "run",
         "python",
         "-m",
         "dm20_protocol"
       ],
-      "cwd": "/Users/ema/Library/Mobile Documents/com~apple~CloudDocs/GitHub la Clonazione/dm20-protocol",
+      "cwd": "/home/sta-aurocon/source/repos/dm20-protocol",
       "env": {
-        "DM20_STORAGE_DIR": "/Users/ema/Library/Mobile Documents/com~apple~CloudDocs/GitHub la Clonazione/dm20-protocol/data",
-        "PYTHONPATH": "/Users/ema/Library/Mobile Documents/com~apple~CloudDocs/GitHub la Clonazione/dm20-protocol/src"
+        "DM20_STORAGE_DIR": "/home/sta-aurocon/source/repos/dm20-protocol/data",
+        "PYTHONPATH": "/home/sta-aurocon/source/repos/dm20-protocol/src"
       }
     }
   }
