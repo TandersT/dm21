@@ -95,6 +95,12 @@ class DnDStorage:
         # Discovery tracker for location/feature discovery state
         self._discovery_tracker: DiscoveryTracker | None = None
 
+        # Fact graph for the current campaign (derived index over the journal;
+        # claudmaster types, loaded lazily in _load_fact_graph)
+        self._fact_db = None
+        self._npc_knowledge_tracker = None
+        self._party_knowledge = None
+
         # Load existing data
         logger.debug("📂 Loading initial data...")
         self._load_current_campaign()
@@ -498,6 +504,9 @@ class DnDStorage:
         self._discovery_tracker = DiscoveryTracker(campaign_dir)
         logger.debug(f"Initialized empty DiscoveryTracker for campaign '{name}'")
 
+        # Initialize fact graph for the new campaign
+        self._load_fact_graph()
+
         logger.info(f"✅ Campaign '{name}' created and set as active using {self._current_format} format (rules: {rules_version}, mode: {interaction_mode}).")
         return campaign
 
@@ -568,6 +577,9 @@ class DnDStorage:
         # Load discovery tracker (split campaigns only)
         self._load_discovery_tracker()
 
+        # Load fact graph (split campaigns only)
+        self._load_fact_graph()
+
         logger.info(f"✅ Successfully loaded campaign '{name}' using {storage_format} format (rules: {self._rules_version}).")
         return self._current_campaign
 
@@ -624,6 +636,9 @@ class DnDStorage:
             self._interaction_mode = "classic"
             self._library_bindings = None
             self._discovery_tracker = None
+            self._fact_db = None
+            self._npc_knowledge_tracker = None
+            self._party_knowledge = None
             if hasattr(self, '_split_backend'):
                 self._split_backend._current_campaign = None
             logger.info(f"🧹 Cleared active campaign state (was: '{name}')")
@@ -1382,6 +1397,66 @@ class DnDStorage:
         except Exception as e:
             logger.warning(f"Failed to load DiscoveryTracker: {e}")
             self._discovery_tracker = None
+
+    # ------------------------------------------------------------------
+    # Fact Graph Management
+    # ------------------------------------------------------------------
+
+    @property
+    def fact_db(self):
+        """Get the FactDatabase for the current campaign.
+
+        Returns:
+            FactDatabase instance if a split campaign is loaded and the graph
+            loaded successfully, None otherwise.
+        """
+        return self._fact_db
+
+    @property
+    def npc_knowledge_tracker(self):
+        """Get the NPCKnowledgeTracker for the current campaign (or None)."""
+        return self._npc_knowledge_tracker
+
+    @property
+    def party_knowledge(self):
+        """Get the PartyKnowledge tracker for the current campaign (or None)."""
+        return self._party_knowledge
+
+    def _load_fact_graph(self) -> None:
+        """Load or initialize the fact graph for the current campaign.
+
+        Only applicable to split storage campaigns. Builds the FactDatabase
+        plus the NPCKnowledgeTracker and PartyKnowledge views over it, loading
+        any persisted state from the campaign directory. On failure all three
+        accessors degrade to None — fact graph problems must never break the
+        primary journal/entity write path.
+        """
+        self._fact_db = None
+        self._npc_knowledge_tracker = None
+        self._party_knowledge = None
+
+        if self._current_format != StorageFormat.SPLIT or not self._current_campaign:
+            return
+
+        campaign_dir = self._split_backend._get_campaign_dir(self._current_campaign.name)
+        try:
+            from .claudmaster.consistency.fact_database import FactDatabase
+            from .claudmaster.consistency.npc_knowledge import NPCKnowledgeTracker
+            from .consistency.party_knowledge import PartyKnowledge
+
+            fact_db = FactDatabase(campaign_dir)
+            self._npc_knowledge_tracker = NPCKnowledgeTracker(fact_db, campaign_dir)
+            self._party_knowledge = PartyKnowledge(fact_db, campaign_dir)
+            self._fact_db = fact_db
+            logger.info(
+                f"Loaded fact graph for campaign '{self._current_campaign.name}' "
+                f"({len(fact_db.facts)} facts)"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to load fact graph: {e}")
+            self._fact_db = None
+            self._npc_knowledge_tracker = None
+            self._party_knowledge = None
 
     def _save_discovery_state(self) -> None:
         """Save the discovery state for the current campaign.
