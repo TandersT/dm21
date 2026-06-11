@@ -4697,6 +4697,14 @@ def sync_facts() -> str:
     npcs_by_name = _registered_npcs_by_name()
     current_session = _current_session_number()
 
+    def _interaction_count() -> int:
+        tracker = storage.npc_knowledge_tracker
+        if tracker is None:
+            return 0
+        return sum(len(tracker.get_interactions(npc.id)) for npc in npcs_by_name.values())
+
+    interactions_before = _interaction_count()
+
     # Replay the journal in chronological order. Events without a session get
     # session 1 — deterministic from the journal alone, so replays converge;
     # merge-preserve keeps the attribution of facts the dual-write already made.
@@ -4717,12 +4725,14 @@ def sync_facts() -> str:
 
     ingest.save()
     facts_after = len(fact_db.facts)
+    interactions_recorded = _interaction_count() - interactions_before
 
     return (
         f"✅ Fact sync complete for campaign '{campaign.name}'.\n"
         f"- Events replayed: {len(events)}\n"
         f"- Entities swept: {len(npcs)} NPCs, {len(locations)} locations, {len(quests)} quests\n"
-        f"- Facts: {facts_before} → {facts_after} (+{facts_after - facts_before})\n\n"
+        f"- Facts: {facts_before} → {facts_after} (+{facts_after - facts_before})\n"
+        f"- NPC interactions recorded: {interactions_recorded}\n\n"
         f"⚠️ The adventure log is global and has no campaign attribution — events "
         f"from other campaigns sharing this data directory may have been ingested "
         f"into this campaign's fact graph."

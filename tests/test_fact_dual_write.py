@@ -190,6 +190,7 @@ class TestSyncFacts:
         # met-tracking from the replayed journal
         assert len(s.npc_knowledge_tracker.get_interactions(npc.id)) == 1
         assert "5" in result
+        assert "interactions recorded: 1" in result
 
     def test_warns_about_multi_campaign_attribution(self, m, populated_storage):
         result = m.sync_facts.fn()

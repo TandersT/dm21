@@ -27,6 +27,7 @@ existing lazy-claudmaster convention.
 """
 
 import logging
+from datetime import datetime
 from typing import Mapping
 
 from dm20_protocol.claudmaster.consistency.fact_database import FactDatabase
@@ -173,7 +174,7 @@ class FactIngest:
         relevance: float | None,
         tags: list[str],
         source: str,
-        timestamp=None,
+        timestamp: datetime | None = None,
         managed_tags: frozenset[str] = frozenset(),
     ) -> str:
         """
