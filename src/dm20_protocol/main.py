@@ -1472,7 +1472,7 @@ def _npc_continuity_block(npc: NPC) -> str | None:
 
 @mcp.tool
 def get_npc(
-    name_or_id: Annotated[str, Field(description="NPC name or ID")],
+    name_or_id: Annotated[str, Field(description="NPC name (exact, case-sensitive match)")],
     player_id: Annotated[str | None, Field(description="Caller's player ID for output filtering. When provided, DM-only fields (bio, notes, stats, relationships) are stripped for non-DM callers.")] = None,
 ) -> str:
     """Get NPC information."""
