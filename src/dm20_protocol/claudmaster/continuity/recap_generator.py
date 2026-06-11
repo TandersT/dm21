@@ -15,10 +15,16 @@ if TYPE_CHECKING:
     from dm20_protocol.claudmaster.consistency.fact_database import FactDatabase
     from dm20_protocol.claudmaster.consistency.npc_knowledge import NPCKnowledgeTracker
     from dm20_protocol.claudmaster.consistency.timeline import TimelineTracker
+    from dm20_protocol.models import AdventureEvent
 
 from dm20_protocol.claudmaster.consistency.models import Fact, FactCategory
 
 logger = logging.getLogger("dm20-protocol")
+
+# Accepted values for generate_recap's length/style parameters. Callers
+# validating user input should check against these.
+RECAP_LENGTHS = ("brief", "standard", "detailed")
+RECAP_STYLES = ("narrative", "bullet", "mixed")
 
 
 @dataclass
@@ -77,6 +83,9 @@ class SessionRecap:
         party_status: Brief party condition summary
         npc_reminders: Important NPC relationship reminders
         suggested_hooks: Where to pick up the story next
+        verbatim_events: The session's journal events, untruncated, sorted by
+            importance (desc) then timestamp — exact established detail the
+            summary sections must not contradict
     """
     previously_on: str = ""
     key_events: list[str] = field(default_factory=list)
@@ -86,6 +95,7 @@ class SessionRecap:
     party_status: str = ""
     npc_reminders: list[str] = field(default_factory=list)
     suggested_hooks: list[str] = field(default_factory=list)
+    verbatim_events: list[AdventureEvent] = field(default_factory=list)
 
 
 class SessionRecapGenerator:
@@ -123,7 +133,8 @@ class SessionRecapGenerator:
         self,
         session_number: int,
         length: str = "standard",
-        style: str = "narrative"
+        style: str = "narrative",
+        events: list[AdventureEvent] | None = None,
     ) -> SessionRecap:
         """
         Generate a session recap.
@@ -135,6 +146,9 @@ class SessionRecapGenerator:
             session_number: Session number to generate recap for
             length: Recap length - "brief", "standard", or "detailed"
             style: Presentation style - "narrative", "bullet", or "mixed"
+            events: The session's journal events, injected by the caller
+                (this layer is storage-free). Carried verbatim on the recap,
+                sorted by importance (desc) then timestamp.
 
         Returns:
             Complete SessionRecap object
@@ -169,6 +183,12 @@ class SessionRecapGenerator:
         # Build party status
         party_status = self._get_party_status(session_number)
 
+        # Carry the session's journal events verbatim: most important first,
+        # chronological within equal importance
+        verbatim_events = sorted(
+            events or [], key=lambda e: (-e.importance, e.timestamp)
+        )
+
         recap = SessionRecap(
             previously_on=previously_on,
             key_events=key_events,
@@ -178,6 +198,7 @@ class SessionRecapGenerator:
             party_status=party_status,
             npc_reminders=npc_reminders,
             suggested_hooks=suggested_hooks,
+            verbatim_events=verbatim_events,
         )
 
         logger.info(
@@ -596,4 +617,6 @@ __all__ = [
     "SessionRecap",
     "StoryThread",
     "QuestSummary",
+    "RECAP_LENGTHS",
+    "RECAP_STYLES",
 ]

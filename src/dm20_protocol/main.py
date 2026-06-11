@@ -4914,6 +4914,125 @@ def sync_facts() -> str:
     )
 
 
+@mcp.tool
+def get_session_recap(
+    session_number: Annotated[int | None, Field(description="Session to recap (defaults to the latest session with journal events, or the current session if the journal has none)", ge=1)] = None,
+    length: Annotated[str, Field(description="Recap length: brief, standard, or detailed")] = "standard",
+    style: Annotated[str, Field(description="Presentation style: narrative, bullet, or mixed")] = "narrative",
+) -> str:
+    """Get a full recap for resuming a session.
+
+    Assembles everything the resuming DM needs from the fact graph:
+    'previously on' narrative, key events, active quests, unresolved threads,
+    current situation, party status, NPC reminders, and suggested hooks —
+    plus the session's journal events verbatim, so established details
+    (names, places, exact wording) are available and can't be contradicted.
+    """
+    campaign = storage.get_current_campaign()
+    if not campaign:
+        return "No active campaign. Load or create a campaign first."
+
+    fact_db = storage.fact_db
+    tracker = storage.npc_knowledge_tracker
+    if fact_db is None or tracker is None:
+        return (
+            "Cannot generate recap: the fact graph could not be loaded "
+            "for this campaign (split-format campaigns only)."
+        )
+
+    from .claudmaster.continuity.recap_generator import (
+        RECAP_LENGTHS,
+        RECAP_STYLES,
+        SessionRecapGenerator,
+    )
+
+    if length not in RECAP_LENGTHS:
+        valid = ", ".join(RECAP_LENGTHS)
+        return f"Invalid length '{length}'. Valid lengths: {valid}"
+
+    if style not in RECAP_STYLES:
+        valid = ", ".join(RECAP_STYLES)
+        return f"Invalid style '{style}'. Valid styles: {valid}"
+
+    if session_number is None:
+        # Latest session with recorded journal data; the current game-state
+        # session is the fallback when no event carries a session number.
+        recorded = [e.session_number for e in storage.get_events() if e.session_number]
+        session_number = max(recorded) if recorded else _current_session_number()
+
+    session_events = [
+        e for e in storage.get_events() if e.session_number == session_number
+    ]
+
+    generator = SessionRecapGenerator(fact_db, npc_tracker=tracker, timeline=None)
+    recap = generator.generate_recap(
+        session_number, length=length, style=style, events=session_events
+    )
+
+    lines = [f"# Session Recap — Session {session_number}\n"]
+
+    lines.append("## Previously On")
+    lines.append(recap.previously_on)
+    lines.append("")
+
+    if recap.key_events:
+        lines.append("## Key Events")
+        lines.extend(f"- {event}" for event in recap.key_events)
+        lines.append("")
+
+    if recap.active_quests:
+        lines.append("## Active Quests")
+        for quest in recap.active_quests:
+            lines.append(f"### {quest.quest_name} ({quest.status})")
+            if quest.key_objectives:
+                lines.extend(f"- {objective}" for objective in quest.key_objectives)
+            if quest.progress_notes:
+                lines.append(f"- *{quest.progress_notes}*")
+            lines.append("")
+
+    if recap.unresolved_threads:
+        lines.append("## Unresolved Threads")
+        lines.extend(f"- {thread}" for thread in recap.unresolved_threads)
+        lines.append("")
+
+    lines.append("## Current Situation")
+    lines.append(recap.current_situation)
+    lines.append("")
+
+    lines.append("## Party Status")
+    lines.append(recap.party_status)
+    lines.append("")
+
+    if recap.npc_reminders:
+        lines.append("## NPC Reminders")
+        lines.extend(f"- {reminder}" for reminder in recap.npc_reminders)
+        lines.append("")
+
+    if recap.suggested_hooks:
+        lines.append("## Suggested Hooks")
+        lines.extend(f"- {hook}" for hook in recap.suggested_hooks)
+        lines.append("")
+
+    # Exact established detail — full descriptions, never truncated. Stated
+    # explicitly when empty so the DM knows nothing was recorded.
+    lines.append(f"## Verbatim Journal Events (Session {session_number})")
+    if not recap.verbatim_events:
+        lines.append("No journal events recorded for this session.")
+    else:
+        for event in recap.verbatim_events:
+            lines.append("")
+            lines.append(
+                f"### {event.title} ({event.event_type.value}, importance {event.importance}/5)"
+            )
+            lines.append(event.description)
+            if event.location:
+                lines.append(f"- **Location:** {event.location}")
+            if event.characters_involved:
+                lines.append(f"- **Characters:** {', '.join(event.characters_involved)}")
+
+    return "\n".join(lines)
+
+
 # --------------------------------------------------------------------------
 # Character Import Tools (Epic: D&D Beyond Character Import)
 # --------------------------------------------------------------------------
