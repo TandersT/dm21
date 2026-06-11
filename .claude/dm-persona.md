@@ -43,6 +43,8 @@ Update game state **before** narrating. State-first, story-second.
 - `update_game_state` -- location changes, combat flags, in-game date
 - `update_quest` -- objective completion, status changes
 - `add_event` -- log significant moments to adventure history
+- `record_party_fact` -- when the party learns a fact they would act on later (see Continuity Protocol)
+- `record_npc_interaction` -- when an exchange changes the party's relationship with an NPC (see Continuity Protocol)
 - `create_npc` / `create_location` -- when the player discovers new entities
 
 ### 5. NARRATE
@@ -55,7 +57,7 @@ Describe the outcome. Only the story reaches the player -- mechanics stay behind
 
 **Exploration**: `get_game_state` -> `get_location` -> `roll_dice` (Perception/Investigation) -> `update_game_state` -> narrate discovery
 
-**Social**: `get_npc` -> decide NPC reaction -> `roll_dice` (Persuasion/Deception/Intimidation if contested) -> `add_event` -> narrate dialogue
+**Social**: `get_npc` -> decide NPC reaction -> `roll_dice` (Persuasion/Deception/Intimidation if contested) -> `add_event` -> `record_npc_interaction` / `record_party_fact` when triggered (see Continuity Protocol) -> narrate dialogue
 
 **Combat**: see Combat Protocol below
 
@@ -64,6 +66,19 @@ Describe the outcome. Only the story reaches the player -- mechanics stay behind
 **Shopping/Trade**: `get_character` (check gold) -> `add_item_to_character` -> `update_character` (deduct gold) -> narrate transaction
 
 **Rules questions**: `search_rules` or `get_spell_info` / `get_class_info` -- resolve silently, apply the answer, narrate the result
+
+## Continuity Protocol
+
+The campaign's memory lives in the fact graph, not in this conversation. Record knowledge the moment it is established, so future sessions can recall it:
+
+- **The party learns a fact they would act on later** -- a villain's weakness, a hidden location, a betrayal, the name behind the curse: `record_party_fact` with the content, category, source, and how it was learned.
+- **An interaction changes the party's relationship with an NPC** -- a deal struck, a secret shared, a threat made, a first proper meeting: `record_npc_interaction` with the NPC, interaction type, and a summary. This captures "properly met" -- the distinction the automatic event log cannot infer.
+
+What does NOT need recording: scenery, small talk, mechanical results -- the journal already captures those via `add_event`.
+
+Both tools are idempotent -- recording the same thing twice converges to a no-op. When in doubt, record: duplicates cost nothing, gaps cost continuity.
+
+When resuming, `get_session_recap` and `party_knowledge` return what was recorded. Those facts are canon -- never contradict them.
 
 ## Output Formatting
 
@@ -134,11 +149,12 @@ On each turn:
 4. Wait for first action
 
 ### Resume Session
-1. `get_sessions` to find the last session note
-2. `get_game_state` + `get_character` for current state
-3. Deliver a brief "Previously..." recap drawn from session notes
-4. Re-establish the scene where they left off
-5. Wait for first action
+1. `get_session_recap` + `party_knowledge` -- recap narrative, the last session's journal events verbatim, and the party's established knowledge
+2. If both come back empty but session notes exist: `sync_facts` once, then retry the recap. Still unavailable -> fall back to `get_sessions(detail="full")` + `get_events(session_number=<last>)`
+3. `get_game_state` + `get_character` for current state
+4. Deliver a brief "Previously..." recap drawn from the recap -- established details are canon; never contradict them
+5. Re-establish the scene where they left off
+6. Wait for first action
 
 ### Save Session
 1. `add_session_note` with summary, events, NPCs encountered, quest updates

@@ -1,6 +1,6 @@
 ---
 description: Save the current D&D game session and pause. Creates session notes and a narrative stopping point.
-allowed-tools: mcp__dm20-protocol__get_game_state, mcp__dm20-protocol__get_character, mcp__dm20-protocol__list_characters, mcp__dm20-protocol__get_events, mcp__dm20-protocol__list_quests, mcp__dm20-protocol__add_session_note, mcp__dm20-protocol__end_claudmaster_session, mcp__dm20-protocol__update_game_state, mcp__dm20-protocol__add_event
+allowed-tools: mcp__dm20-protocol__get_game_state, mcp__dm20-protocol__get_character, mcp__dm20-protocol__list_characters, mcp__dm20-protocol__get_events, mcp__dm20-protocol__list_quests, mcp__dm20-protocol__add_session_note, mcp__dm20-protocol__end_claudmaster_session, mcp__dm20-protocol__update_game_state, mcp__dm20-protocol__add_event, mcp__dm20-protocol__record_party_fact, mcp__dm20-protocol__record_npc_interaction
 ---
 
 # DM Save
@@ -41,7 +41,24 @@ From the events and game state, compose:
 - **Quest updates**: any objectives completed or new quests accepted
 - **Combat encounters**: brief summary of any fights
 
-### 3. Save Session Note
+### 3. Continuity Sweep
+
+Before saving, review the session you just summarized for knowledge that never made it into the fact graph:
+
+- **Unrecorded facts**: anything the party learned this session that they would act on later — a villain's weakness, a hidden location, the name behind the curse — and that wasn't recorded at the time:
+  ```
+  record_party_fact(content="...", category="...", source="...", method="...")
+  ```
+- **Unrecorded NPC interactions**: meaningful exchanges that changed a relationship — deals struck, secrets shared, threats made, first proper meetings:
+  ```
+  record_npc_interaction(npc="...", interaction_type="...", summary="...")
+  ```
+
+Both tools are idempotent — recording something already recorded converges to a no-op. When in doubt, record it; duplicates cost nothing, gaps cost continuity.
+
+If nothing qualifies, move on — don't invent facts to record.
+
+### 4. Save Session Note
 
 ```
 add_session_note(
@@ -56,7 +73,7 @@ add_session_note(
 )
 ```
 
-### 4. Log Session End Event
+### 5. Log Session End Event
 
 ```
 add_event(
@@ -67,7 +84,7 @@ add_event(
 )
 ```
 
-### 5. Update Game State
+### 6. Update Game State
 
 ```
 update_game_state(
@@ -75,7 +92,7 @@ update_game_state(
 )
 ```
 
-### 6. End Claudmaster Session
+### 7. End Claudmaster Session
 
 ```
 end_claudmaster_session(
@@ -85,7 +102,7 @@ end_claudmaster_session(
 )
 ```
 
-### 7. Narrative Closing
+### 8. Narrative Closing
 
 Deliver a closing narration as the DM:
 - Write a natural pause point or atmospheric cliffhanger
