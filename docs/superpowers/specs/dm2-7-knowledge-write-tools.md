@@ -66,11 +66,13 @@ Flow:
 1. Campaign guard → "No active campaign…" (existing message).
 2. `storage.fact_db` / `storage.party_knowledge` None → "fact graph
    unavailable (split-format campaigns only)" message.
-3. Empty `content` (after strip) → error.
+3. `content` is stripped of surrounding whitespace (so accidental padding
+   converges on the same fact id); empty after strip → error.
 4. Validate `category` against `FactCategory`, `method` against
    `AcquisitionMethod` — `party_knowledge`-style error listing valid values.
 5. `session = session or _current_session_number()`.
-6. `fact_id = f"pfact_{sha256(content.lower())[:12]}"` (utf-8, hexdigest).
+6. `fact_id = f"pfact_{sha256(content.lower())[:12]}"` (utf-8, hexdigest,
+   on the stripped content).
 7. Upsert: if `fact_db.get_fact(fact_id)` is None, `add_fact(Fact(id=fact_id,
    category=…, content=content, session_number=session, source=source))`.
    If it exists the content is identical by construction (hash-derived id) —

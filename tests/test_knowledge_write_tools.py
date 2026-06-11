@@ -8,6 +8,7 @@ ingest_npc upsert. Tools are exercised via the underlying functions (`.fn`)
 with the module-level storage swapped, following tests/test_fact_dual_write.py.
 """
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -51,18 +52,20 @@ class TestRecordPartyFact:
         assert "consecrated ground" in query
         assert "Father Lucian" in query
 
-    def test_fact_id_is_content_derived(self, m, storage):
+        fact = storage.party_knowledge.get_all_known_facts()[0]["fact"]
+        assert fact.category.value == "npc"
+        assert fact.source == "Father Lucian"
+
+    def test_fact_id_matches_pinned_formula(self, m, storage):
+        content = "The sunsword lies beneath the castle"
         m.record_party_fact.fn(
-            content="The sunsword lies beneath the castle",
+            content=content,
             category="item",
             source="Madam Eva",
             method="told_by_npc",
         )
-        facts = [f for f in storage.fact_db.facts.values() if f.id.startswith("pfact_")]
-        assert len(facts) == 1
-        suffix = facts[0].id.removeprefix("pfact_")
-        assert len(suffix) == 12
-        assert all(c in "0123456789abcdef" for c in suffix)
+        expected = f"pfact_{hashlib.sha256(content.lower().encode('utf-8')).hexdigest()[:12]}"
+        assert storage.fact_db.get_fact(expected) is not None
 
     def test_identical_repeat_converges(self, m, storage):
         m.record_party_fact.fn(
@@ -98,6 +101,32 @@ class TestRecordPartyFact:
         )
         assert "already knows" in result
         assert storage.party_knowledge.known_fact_count == 1
+
+    def test_whitespace_normalized_content_converges(self, m, storage):
+        m.record_party_fact.fn(
+            content="Strahd is a vampire",
+            category="npc",
+            source="Ismark",
+            method="told_by_npc",
+        )
+        result = m.record_party_fact.fn(
+            content="  Strahd is a vampire  ",
+            category="npc",
+            source="Ireena",
+            method="told_by_npc",
+        )
+        assert "already knows" in result
+        assert storage.party_knowledge.known_fact_count == 1
+
+    def test_save_errors_propagate(self, m, storage, monkeypatch):
+        def boom():
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(storage.fact_db, "save", boom)
+        with pytest.raises(RuntimeError, match="disk full"):
+            m.record_party_fact.fn(
+                content="x", category="world", source="s", method="observed"
+            )
 
     def test_invalid_category_lists_valid_values(self, m):
         result = m.record_party_fact.fn(
@@ -274,6 +303,18 @@ class TestRecordNpcInteraction:
         )
         assert "empty" in result.lower()
         assert len(storage.npc_knowledge_tracker.get_interactions(npc.id)) == 0
+
+    def test_save_errors_propagate(self, m, storage, monkeypatch):
+        m.create_npc.fn(name="Ismark")
+
+        def boom():
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(storage.fact_db, "save", boom)
+        with pytest.raises(RuntimeError, match="disk full"):
+            m.record_npc_interaction.fn(
+                npc="Ismark", interaction_type="conversation", summary="x"
+            )
 
     def test_persists_to_disk(self, m, storage, tmp_path):
         m.create_npc.fn(name="Ismark")

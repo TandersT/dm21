@@ -4701,7 +4701,8 @@ def record_party_fact(
             "for this campaign (split-format campaigns only)."
         )
 
-    if not content.strip():
+    content = content.strip()
+    if not content:
         return "Fact content cannot be empty."
 
     from .claudmaster.consistency.models import Fact, FactCategory
