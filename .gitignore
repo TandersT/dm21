@@ -103,3 +103,6 @@ rulebook_cache/
 
 # Virtual environments with spaces in name
 .venv */
+
+# workflow-loop run state
+.claude-loop/

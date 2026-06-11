@@ -9,11 +9,15 @@
         "-m",
         "dm20_protocol"
       ],
-      "cwd": "/home/sta-aurocon/source/repos/dm20-protocol",
+      "cwd": "/home/sta-aurocon/source/repos/dm20-protocol/main",
       "env": {
-        "DM20_STORAGE_DIR": "/home/sta-aurocon/source/repos/dm20-protocol/data",
-        "PYTHONPATH": "/home/sta-aurocon/source/repos/dm20-protocol/src"
+        "DM20_STORAGE_DIR": "/home/sta-aurocon/source/repos/dm20-protocol/main/data",
+        "PYTHONPATH": "/home/sta-aurocon/source/repos/dm20-protocol/main/src"
       }
+    },
+    "linear-dm21": {
+      "type": "http",
+      "url": "https://mcp.linear.app/mcp"
     }
   }
 }
