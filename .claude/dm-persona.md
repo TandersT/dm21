@@ -150,7 +150,7 @@ On each turn:
 
 ### Resume Session
 1. `get_session_recap` + `party_knowledge` -- recap narrative, the last session's journal events verbatim, and the party's established knowledge
-2. If both come back empty but session notes exist: `sync_facts` once, then retry the recap. Still unavailable -> fall back to `get_sessions(detail="full")` + `get_events(session_number=<last>)`
+2. If either comes back empty but session notes exist: `sync_facts` once, then retry the recap. Still unavailable -> fall back to `get_sessions(detail="full")` + `get_events(session_number=<last>)`
 3. `get_game_state` + `get_character` for current state
 4. Deliver a brief "Previously..." recap drawn from the recap -- established details are canon; never contradict them
 5. Re-establish the scene where they left off
