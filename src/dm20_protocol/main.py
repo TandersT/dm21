@@ -1380,6 +1380,22 @@ def _registered_npcs_by_name() -> dict[str, NPC]:
     return {npc.name: npc for npc in storage.list_npcs_detailed()}
 
 
+def _resolve_npc(name_or_id: str) -> NPC | None:
+    """Resolve an NPC by exact name, case-insensitive name, or entity id."""
+    npc = storage.get_npc(name_or_id)
+    if npc is not None:
+        return npc
+    lookup = name_or_id.lower()
+    return next(
+        (
+            n
+            for n in storage.list_npcs_detailed()
+            if n.name.lower() == lookup or n.id == name_or_id
+        ),
+        None,
+    )
+
+
 def _ingest_to_fact_graph(ingest_fn) -> None:
     """Best-effort dual-write into the fact graph.
 
@@ -4790,17 +4806,7 @@ def record_npc_interaction(
     if not summary.strip():
         return "Interaction summary cannot be empty."
 
-    npc_obj = storage.get_npc(npc)
-    if npc_obj is None:
-        lookup = npc.lower()
-        npc_obj = next(
-            (
-                n
-                for n in storage.list_npcs_detailed()
-                if n.name.lower() == lookup or n.id == npc
-            ),
-            None,
-        )
+    npc_obj = _resolve_npc(npc)
     if npc_obj is None:
         return f"NPC '{npc}' not found. Create the NPC first with create_npc."
 
