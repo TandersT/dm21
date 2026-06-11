@@ -16,6 +16,41 @@ from dm20_protocol.models import Location, NPC, Quest
 
 logger = logging.getLogger("dm20-protocol")
 
+# Leading section names that are front-matter, not playable chapters. Matched
+# as case-insensitive substrings against a chapter name.
+_FRONT_MATTER_MARKERS = (
+    "foreword",
+    "introduction",
+    "preface",
+    "credits",
+    "acknowledg",
+    "how to use",
+    "using this",
+    "table of contents",
+    "welcome to",
+)
+
+
+def _first_playable_chapter(chapters):
+    """Return the first chapter that is actual play content.
+
+    Real modules often open with a Foreword and an Introduction before the
+    first playable chapter. This skips leading front-matter and returns the
+    first content chapter, falling back to the first chapter if every entry
+    looks like front-matter.
+
+    Args:
+        chapters: Non-empty list of ModuleElement chapters.
+
+    Returns:
+        The first playable ModuleElement.
+    """
+    for chapter in chapters:
+        name_lower = chapter.name.lower()
+        if not any(marker in name_lower for marker in _FRONT_MATTER_MARKERS):
+            return chapter
+    return chapters[0]
+
 
 async def load_adventure_flow(
     storage,  # DnDStorage instance
@@ -113,7 +148,7 @@ async def load_adventure_flow(
     # Step 5: Chapter 1 auto-population
     chapter_1_populated = False
     if populate_chapter_1 and module.chapters:
-        ch1 = module.chapters[0]
+        ch1 = _first_playable_chapter(module.chapters)
         logger.info(f"Populating Chapter 1: {ch1.name}")
 
         # Create locations from Chapter 1 (max 3)

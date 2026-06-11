@@ -675,3 +675,92 @@ async def test_full_parse_cycle(parser: AdventureParser):
 
     # Read-aloud
     assert len(result.read_aloud) > 0
+
+
+# --- Real 5etools Content Format (sections directly under "data") ---
+
+
+def create_real_format_adventure_data() -> dict[str, Any]:
+    """Real 5etools content format: sections live directly under "data".
+
+    Unlike the wrapper fixture (create_mock_adventure_data), the actual
+    adventure-<id>.json files have no wrapper object — data["data"] is the
+    list of section objects, and the adventure's display name is not present
+    (it lives in the separate adventures.json index).
+    """
+    return {
+        "data": [
+            {
+                "type": "section",
+                "name": "Foreword: Ravenloft Revisited",
+                "page": 1,
+                "entries": ["Welcome to Barovia."],
+            },
+            {
+                "type": "section",
+                "name": "Chapter 1: Into the Mists",
+                "page": 5,
+                "entries": ["The mists close in around you."],
+            },
+            {
+                "type": "section",
+                "name": "Chapter 2: The Lands of Barovia",
+                "page": 20,
+                "entries": ["A gloomy valley stretches before you."],
+            },
+        ]
+    }
+
+
+async def test_parse_real_5etools_format(parser: AdventureParser):
+    """Sections directly under data[] must be parsed as chapters.
+
+    Regression: the parser mistook data["data"][0] (the first section) for an
+    adventure wrapper, producing zero chapters and a title equal to that
+    section's name.
+    """
+    mock_data = create_real_format_adventure_data()
+
+    with patch.object(parser, "_get_adventure_data", return_value=mock_data):
+        result = await parser.parse_adventure("CoS")
+
+    assert len(result.chapters) == 3
+    assert result.chapters[0].name == "Foreword: Ravenloft Revisited"
+    assert result.chapters[1].name == "Chapter 1: Into the Mists"
+    assert result.chapters[2].name == "Chapter 2: The Lands of Barovia"
+    # The title must NOT be the first section's name.
+    assert result.title != "Foreword: Ravenloft Revisited"
+
+
+async def test_real_format_title_from_index(
+    parser: AdventureParser, cache_dir: Path
+):
+    """Display title for real-format adventures is resolved from the index."""
+    index_dir = cache_dir / "adventures" / "cache"
+    index_dir.mkdir(parents=True, exist_ok=True)
+    (index_dir / "adventures.json").write_text(
+        json.dumps(
+            {
+                "adventure": [
+                    {"id": "CoS", "name": "Curse of Strahd", "source": "CoS"}
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    mock_data = create_real_format_adventure_data()
+    with patch.object(parser, "_get_adventure_data", return_value=mock_data):
+        result = await parser.parse_adventure("CoS")
+
+    assert result.title == "Curse of Strahd"
+
+
+async def test_real_format_title_falls_back_to_id(parser: AdventureParser):
+    """Without a cached index, the title falls back to the adventure ID."""
+    mock_data = create_real_format_adventure_data()
+
+    with patch.object(parser, "_get_adventure_data", return_value=mock_data):
+        result = await parser.parse_adventure("CoS")
+
+    assert result.title == "CoS"

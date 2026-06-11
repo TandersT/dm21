@@ -436,6 +436,93 @@ async def test_load_adventure_flow_binding_failure(mock_storage, mock_module_str
             assert any("binding" in w.lower() for w in result["warnings"])
 
 
+async def test_load_adventure_flow_skips_front_matter(mock_storage):
+    """Population selects the first playable chapter, skipping front-matter.
+
+    Many real modules (e.g. Curse of Strahd) open with a Foreword and an
+    Introduction before the first playable chapter. Chapter 1 population must
+    seed from the playable chapter, not the front-matter.
+    """
+    module_with_front_matter = ModuleStructure(
+        module_id="FrontMatter",
+        title="Front Matter Adventure",
+        source_file="adventure-FrontMatter.json",
+        chapters=[
+            ModuleElement(
+                name="Foreword: A Note",
+                content_type=ContentType.CHAPTER,
+                page_start=1,
+            ),
+            ModuleElement(
+                name="Introduction",
+                content_type=ContentType.CHAPTER,
+                page_start=2,
+            ),
+            ModuleElement(
+                name="Chapter 1: Into the Mists",
+                content_type=ContentType.CHAPTER,
+                page_start=5,
+            ),
+        ],
+        npcs=[
+            NPCReference(name="Foreword Ghost", chapter="Foreword: A Note", page=1),
+            NPCReference(
+                name="Strahd", chapter="Chapter 1: Into the Mists", page=5
+            ),
+        ],
+        locations=[
+            LocationReference(name="Front Cover", chapter="Foreword: A Note", page=1),
+            LocationReference(
+                name="Village of Barovia",
+                chapter="Chapter 1: Into the Mists",
+                page=5,
+            ),
+        ],
+        metadata={},
+    )
+
+    with patch(
+        "dm20_protocol.adventures.tools.AdventureParser"
+    ) as mock_parser_class:
+        mock_parser = AsyncMock()
+        mock_parser.parse_adventure.return_value = module_with_front_matter
+        mock_parser_class.return_value = mock_parser
+
+        with patch(
+            "dm20_protocol.adventures.tools.CampaignModuleManager"
+        ) as mock_manager_class:
+            mock_manager = MagicMock()
+            mock_manager.bind_module.return_value = BindingResult(
+                success=True, module_id="FrontMatter", message="Success"
+            )
+            mock_manager_class.return_value = mock_manager
+
+            result = await load_adventure_flow(
+                storage=mock_storage,
+                data_path=Path("/fake/data"),
+                adventure_id="FrontMatter",
+                campaign_name="Test Campaign",
+                populate_chapter_1=True,
+            )
+
+    # Entities seeded from the playable chapter, not the front-matter
+    created_npc_names = [c[0][0].name for c in mock_storage.add_npc.call_args_list]
+    assert "Strahd" in created_npc_names
+    assert "Foreword Ghost" not in created_npc_names
+
+    created_loc_names = [
+        c[0][0].name for c in mock_storage.add_location.call_args_list
+    ]
+    assert "Village of Barovia" in created_loc_names
+    assert "Front Cover" not in created_loc_names
+
+    # Module progress advanced to the playable chapter
+    mock_manager.update_progress.assert_called_once_with(
+        module_id="FrontMatter", current_chapter="Chapter 1: Into the Mists"
+    )
+    assert result["chapter_1_populated"] is True
+
+
 async def test_load_adventure_flow_max_limits(mock_storage):
     """Test that entity limits are respected (max 3 locations, max 5 NPCs)."""
     # Create module with many Chapter 1 entities

@@ -256,11 +256,20 @@ class AdventureParser:
 
             data_entries = data
         else:
-            # Nested format: {"data": [{"name": ..., "data": [...]}]}
-            adventure_root = data.get("data", [{}])[0] if data.get("data") else {}
-            title = adventure_root.get("name", adventure_id)
-            source = adventure_root.get("source", adventure_id)
-            data_entries = adventure_root.get("data", [])
+            inner = data.get("data", [])
+            first = inner[0] if inner and isinstance(inner[0], dict) else {}
+            if first.get("type") == "section":
+                # Real 5etools content format: sections live directly under
+                # "data". The content file carries no adventure title — that
+                # lives in the separate adventures.json index.
+                title = self._lookup_index_title(adventure_id) or adventure_id
+                source = adventure_id
+                data_entries = inner
+            else:
+                # Wrapper format: {"data": [{"name": ..., "data": [...]}]}
+                title = first.get("name", adventure_id)
+                source = first.get("source", adventure_id)
+                data_entries = first.get("data", [])
 
         # Initialize parser context
         context = ParserContext()
@@ -287,6 +296,32 @@ class AdventureParser:
             metadata={"source": source},
             read_aloud=context.read_aloud,
         )
+
+    def _lookup_index_title(self, adventure_id: str) -> str | None:
+        """Resolve an adventure's display title from the cached index.
+
+        The 5etools content file (adventure-<id>.json) carries only section
+        data, not the adventure's human-readable name. That name lives in the
+        separate adventures.json index, which AdventureIndex caches alongside
+        the content cache. Returns None if the index is unavailable so callers
+        can fall back to the adventure ID.
+        """
+        index_file = self.cache_dir.parent / "adventures.json"
+        if not index_file.exists():
+            return None
+        try:
+            raw = json.loads(index_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return None
+
+        adventure_id_lower = adventure_id.lower()
+        for item in raw.get("adventure", []):
+            if (
+                isinstance(item, dict)
+                and item.get("id", "").lower() == adventure_id_lower
+            ):
+                return item.get("name")
+        return None
 
     def _parse_chapter(
         self, entry: dict[str, Any], chapter_num: int, context: ParserContext
