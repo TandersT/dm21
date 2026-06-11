@@ -4954,15 +4954,15 @@ def get_session_recap(
         valid = ", ".join(RECAP_STYLES)
         return f"Invalid style '{style}'. Valid styles: {valid}"
 
+    journal_events = storage.get_events()
+
     if session_number is None:
         # Latest session with recorded journal data; the current game-state
         # session is the fallback when no event carries a session number.
-        recorded = [e.session_number for e in storage.get_events() if e.session_number]
+        recorded = [e.session_number for e in journal_events if e.session_number]
         session_number = max(recorded) if recorded else _current_session_number()
 
-    session_events = [
-        e for e in storage.get_events() if e.session_number == session_number
-    ]
+    session_events = [e for e in journal_events if e.session_number == session_number]
 
     generator = SessionRecapGenerator(fact_db, npc_tracker=tracker, timeline=None)
     recap = generator.generate_recap(
