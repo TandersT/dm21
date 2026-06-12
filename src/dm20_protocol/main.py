@@ -3,6 +3,7 @@ D&D MCP Server
 A comprehensive D&D campaign management server built with modern FastMCP framework.
 """
 
+import hashlib
 import json
 import logging
 import random
@@ -1377,6 +1378,22 @@ def _current_session_number() -> int:
 def _registered_npcs_by_name() -> dict[str, NPC]:
     """Registered NPCs keyed by name, for met-tracking in event ingestion."""
     return {npc.name: npc for npc in storage.list_npcs_detailed()}
+
+
+def _resolve_npc(name_or_id: str) -> NPC | None:
+    """Resolve an NPC by exact name, case-insensitive name, or entity id."""
+    npc = storage.get_npc(name_or_id)
+    if npc is not None:
+        return npc
+    lookup = name_or_id.lower()
+    return next(
+        (
+            n
+            for n in storage.list_npcs_detailed()
+            if n.name.lower() == lookup or n.id == name_or_id
+        ),
+        None,
+    )
 
 
 def _ingest_to_fact_graph(ingest_fn) -> None:
@@ -4667,6 +4684,170 @@ def party_knowledge(
         lines.append("")
 
     return "\n".join(lines)
+
+
+@mcp.tool
+def record_party_fact(
+    content: Annotated[str, Field(description="The fact the party learned (e.g., 'Strahd cannot enter consecrated ground')")],
+    category: Annotated[str, Field(description="Fact category: event, location, npc, item, quest, world")],
+    source: Annotated[str, Field(description="Who or what provided this knowledge (NPC name, book title, etc.)")],
+    method: Annotated[str, Field(description="How the knowledge was acquired: told_by_npc, observed, investigated, read, overheard, deduced, magical, common_knowledge")],
+    session: Annotated[int | None, Field(description="Session number when the party learned this (defaults to the current session)", ge=1)] = None,
+    location: Annotated[str | None, Field(description="Where the party learned this")] = None,
+    notes: Annotated[str | None, Field(description="Additional context about the acquisition")] = None,
+) -> str:
+    """Record a fact the party has learned.
+
+    Writes the fact into the fact graph and marks it as party-known with
+    acquisition metadata (source, method, session). The fact id is derived
+    from the content, so recording the same fact twice converges instead of
+    duplicating; if the party already knows it, nothing changes.
+
+    Recorded facts are queryable via the party_knowledge tool.
+    """
+    campaign = storage.get_current_campaign()
+    if not campaign:
+        return "No active campaign. Load or create a campaign first."
+
+    fact_db = storage.fact_db
+    pk = storage.party_knowledge
+    if fact_db is None or pk is None:
+        return (
+            "Cannot record party fact: the fact graph could not be loaded "
+            "for this campaign (split-format campaigns only)."
+        )
+
+    content = content.strip()
+    if not content:
+        return "Fact content cannot be empty."
+
+    from .claudmaster.consistency.models import Fact, FactCategory
+
+    try:
+        category_enum = FactCategory(category)
+    except ValueError:
+        valid = ", ".join(c.value for c in FactCategory)
+        return f"Invalid category '{category}'. Valid categories: {valid}"
+
+    try:
+        method_enum = AcquisitionMethod(method)
+    except ValueError:
+        valid = ", ".join(m.value for m in AcquisitionMethod)
+        return f"Invalid method '{method}'. Valid methods: {valid}"
+
+    session_number = session or _current_session_number()
+
+    # Deterministic content-derived id: identical content converges on the
+    # same fact, and learn_fact's fact_id dedupe makes repeats a no-op.
+    fact_id = f"pfact_{hashlib.sha256(content.lower().encode('utf-8')).hexdigest()[:12]}"
+
+    if fact_db.get_fact(fact_id) is None:
+        fact_db.add_fact(
+            Fact(
+                id=fact_id,
+                category=category_enum,
+                content=content,
+                session_number=session_number,
+                source=source,
+            )
+        )
+
+    learned = pk.learn_fact(
+        fact_id=fact_id,
+        source=source,
+        method=method_enum,
+        session=session_number,
+        location=location,
+        notes=notes,
+    )
+
+    # learn_fact tags the fact as party-known, so save the fact db after it.
+    fact_db.save()
+    pk.save()
+
+    if not learned:
+        return f"The party already knows this fact ({fact_id}) — no changes made."
+
+    return (
+        f"✅ Party learned fact {fact_id} via {method_enum.value} "
+        f"from '{source}' (session {session_number}): {content}"
+    )
+
+
+@mcp.tool
+def record_npc_interaction(
+    npc: Annotated[str, Field(description="NPC name or ID — the NPC must already exist (create it with create_npc first)")],
+    interaction_type: Annotated[str, Field(description="Type of interaction (e.g., conversation, combat, trade, observed)")],
+    summary: Annotated[str, Field(description="Brief description of what happened")],
+    session: Annotated[int | None, Field(description="Session number (defaults to the current session)", ge=1)] = None,
+    player_characters: Annotated[str | None, Field(description="Player characters involved — list or JSON array string, e.g. '[\"name1\",\"name2\"]'")] = None,
+    location: Annotated[str | None, Field(description="Where the interaction took place")] = None,
+) -> str:
+    """Record a meaningful interaction between the party and an NPC.
+
+    Use this for encounters the automatic event ingestion can't infer —
+    it distinguishes 'properly met' from 'seen across the room'. Also
+    ensures the NPC has a fact in the fact graph. Recording the exact same
+    summary for the same NPC in the same session is a no-op; the same
+    interaction in a later session is recorded again.
+    """
+    campaign = storage.get_current_campaign()
+    if not campaign:
+        return "No active campaign. Load or create a campaign first."
+
+    fact_db = storage.fact_db
+    tracker = storage.npc_knowledge_tracker
+    if fact_db is None or tracker is None:
+        return (
+            "Cannot record NPC interaction: the fact graph could not be "
+            "loaded for this campaign (split-format campaigns only)."
+        )
+
+    if not summary.strip():
+        return "Interaction summary cannot be empty."
+
+    npc_obj = _resolve_npc(npc)
+    if npc_obj is None:
+        return f"NPC '{npc}' not found. Create the NPC first with create_npc."
+
+    from .claudmaster.consistency.models import PlayerInteraction
+    from .consistency.fact_ingest import FactIngest
+
+    session_number = session or _current_session_number()
+    already_recorded = any(
+        i.summary == summary
+        for i in tracker.get_interactions(npc_obj.id, session=session_number)
+    )
+
+    # Ensure the NPC's fact exists (fact id == entity id) even for NPCs
+    # created before the dual-write; merge-preserve makes this idempotent.
+    ingest = FactIngest(fact_db, tracker)
+    ingest.ingest_npc(npc_obj, session=session_number)
+
+    if not already_recorded:
+        tracker.record_interaction(
+            npc_obj.id,
+            PlayerInteraction(
+                session_number=session_number,
+                interaction_type=interaction_type,
+                summary=summary,
+                player_characters=_parse_json_list(player_characters) if player_characters else [],
+                location=location or "",
+            ),
+        )
+
+    ingest.save()
+
+    if already_recorded:
+        return (
+            f"Interaction with '{npc_obj.name}' already recorded for "
+            f"session {session_number} — no changes made."
+        )
+
+    return (
+        f"✅ Recorded {interaction_type} interaction with '{npc_obj.name}' "
+        f"(session {session_number})."
+    )
 
 
 @mcp.tool
