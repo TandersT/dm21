@@ -59,3 +59,54 @@ class TestCampaignField:
         s = DnDStorage(data_dir=tmp_path / "data")
         s.add_event(_make_event())
         assert s.get_events()[0].campaign is None
+
+
+# ── Per-campaign file + lifecycle ───────────────────────────────────
+
+
+class TestPerCampaignStorage:
+    def test_split_campaign_events_live_in_campaign_dir(self, tmp_path: Path):
+        data = tmp_path / "data"
+        s = DnDStorage(data_dir=data)
+        s.create_campaign(name="Barovia", description="d")
+        s.add_event(_make_event())
+        assert (data / "campaigns" / "Barovia" / "adventure_log.json").exists()
+        assert not (data / "events" / "adventure_log.json").exists()
+
+    def test_campaign_switch_isolates_events(self, tmp_path: Path):
+        s = DnDStorage(data_dir=tmp_path / "data")
+        s.create_campaign(name="Alpha", description="d")
+        s.add_event(_make_event(title="Alpha event"))
+
+        s.create_campaign(name="Beta", description="d")
+        assert s.get_events() == []
+        s.add_event(_make_event(title="Beta event"))
+
+        s.load_campaign("Alpha")
+        assert [e.title for e in s.get_events()] == ["Alpha event"]
+
+        s.load_campaign("Beta")
+        assert [e.title for e in s.get_events()] == ["Beta event"]
+
+    def test_events_survive_storage_reinit(self, tmp_path: Path):
+        data = tmp_path / "data"
+        s = DnDStorage(data_dir=data)
+        s.create_campaign(name="Barovia", description="d")
+        s.add_event(_make_event(title="Persisted"))
+
+        s2 = DnDStorage(data_dir=data)  # init loads most recent campaign
+        assert [e.title for e in s2.get_events()] == ["Persisted"]
+
+    def test_delete_active_campaign_clears_events(self, tmp_path: Path):
+        s = DnDStorage(data_dir=tmp_path / "data")
+        s.create_campaign(name="Barovia", description="d")
+        s.add_event(_make_event())
+        s.delete_campaign("Barovia")
+        assert s.get_events() == []
+
+    def test_no_campaign_falls_back_to_global_log(self, tmp_path: Path):
+        data = tmp_path / "data"
+        s = DnDStorage(data_dir=data)
+        s.add_event(_make_event(title="Campaignless"))
+        assert (data / "events" / "adventure_log.json").exists()
+        assert [e.title for e in s.get_events()] == ["Campaignless"]

@@ -214,7 +214,19 @@ class DnDStorage:
         return self.data_dir / "campaigns" / f"{safe_name}.json"
 
     def _get_events_file(self) -> Path:
-        """Get the file path for adventure events."""
+        """Get the file path for adventure events.
+
+        Split-format campaigns keep their own log in the campaign directory
+        (like the discovery/fact-graph/timeline state). Monolithic campaigns
+        and the no-campaign state fall back to the legacy global log.
+        """
+        if self._current_format == StorageFormat.SPLIT and self._current_campaign:
+            campaign_dir = self._split_backend._get_campaign_dir(self._current_campaign.name)
+            return campaign_dir / "adventure_log.json"
+        return self._get_legacy_events_file()
+
+    def _get_legacy_events_file(self) -> Path:
+        """Get the file path of the legacy global adventure log."""
         return self.data_dir / "events" / "adventure_log.json"
 
     def _detect_campaign_format(self, campaign_name: str) -> str:
@@ -436,8 +448,13 @@ class DnDStorage:
         logger.debug("✅ Events saved successfully.")
 
     def _load_events(self):
-        """Load adventure events from disk."""
+        """Load adventure events for the current campaign from disk.
+
+        Resets in-memory events first, so calling this on every campaign
+        switch is safe.
+        """
         logger.debug("📂 Attempting to load adventure events...")
+        self._events = []
         events_file = self._get_events_file()
         if not events_file.exists():
             logger.debug("❌ Adventure log file does not exist. No events loaded.")
@@ -516,6 +533,10 @@ class DnDStorage:
             self._timeline_tracker.anchored = True
             self._timeline_tracker.save()
 
+        # Load the campaign's adventure log (runs legacy migration when this
+        # is the only campaign in the data directory)
+        self._load_events()
+
         logger.info(f"✅ Campaign '{name}' created and set as active using {self._current_format} format (rules: {rules_version}, mode: {interaction_mode}).")
         return campaign
 
@@ -592,6 +613,10 @@ class DnDStorage:
         # Load timeline tracker (split campaigns only)
         self._load_timeline_tracker()
 
+        # Load the campaign's adventure log (split campaigns have their own;
+        # monolithic campaigns fall back to the legacy global log)
+        self._load_events()
+
         logger.info(f"✅ Successfully loaded campaign '{name}' using {storage_format} format (rules: {self._rules_version}).")
         return self._current_campaign
 
@@ -653,6 +678,7 @@ class DnDStorage:
             self._party_knowledge = None
             self._timeline_tracker = None
             self._contradiction_detector = None
+            self._events = []
             if hasattr(self, '_split_backend'):
                 self._split_backend._current_campaign = None
             logger.info(f"🧹 Cleared active campaign state (was: '{name}')")
