@@ -189,3 +189,54 @@ class TestLegacyMigration:
         s2.create_campaign(name="First", description="d")
         assert [e.title for e in s2.get_events()] == ["Pre-campaign"]
         assert s2.get_events()[0].campaign == "First"
+
+
+# ── sync_facts: warning removed, conditional legacy note ────────────
+
+
+@pytest.fixture
+def scoped_storage(tmp_path: Path) -> DnDStorage:
+    s = DnDStorage(data_dir=tmp_path / "data")
+    s.create_campaign(name="Scoped", description="d", dm_name="DM")
+    return s
+
+
+@pytest.fixture
+def m(scoped_storage: DnDStorage):
+    """dm20_protocol.main with its module-level storage swapped for the test."""
+    from dm20_protocol import main as m
+
+    original = m.storage
+    m.storage = scoped_storage
+    yield m
+    m.storage = original
+
+
+class TestSyncFactsLegacyNote:
+    def test_no_global_log_warning_for_scoped_campaign(self, m, scoped_storage):
+        m.add_event.fn(event_type="world", description="The mists close in.")
+        result = m.sync_facts.fn()
+        assert "global" not in result.lower()
+        assert "other campaigns" not in result.lower()
+
+    def test_notes_unmigrated_legacy_log(self, m, scoped_storage):
+        # A second campaign makes the legacy log unattributable
+        scoped_storage.create_campaign(name="Second", description="d")
+        _write_legacy_log(
+            scoped_storage.data_dir,
+            [_make_event(title="Orphan one"), _make_event(title="Orphan two")],
+        )
+        result = m.sync_facts.fn()
+        assert "2 unattributed legacy event" in result
+        assert "not replayed" in result
+
+    def test_storage_counts_legacy_events(self, scoped_storage):
+        assert scoped_storage.legacy_unattributed_event_count() == 0
+        scoped_storage.create_campaign(name="Second", description="d")
+        _write_legacy_log(scoped_storage.data_dir, [_make_event(title="Orphan")])
+        assert scoped_storage.legacy_unattributed_event_count() == 1
+
+    def test_count_is_zero_when_legacy_file_is_the_active_log(self, tmp_path: Path):
+        s = DnDStorage(data_dir=tmp_path / "data")  # no campaign loaded
+        s.add_event(_make_event())
+        assert s.legacy_unattributed_event_count() == 0

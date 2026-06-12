@@ -5437,7 +5437,7 @@ def npc_knowledge(
 def sync_facts() -> str:
     """Backfill the fact graph from the existing journal and campaign entities.
 
-    Replays all adventure log events and sweeps the current campaign's NPCs,
+    Replays the campaign's adventure log events and sweeps the current campaign's NPCs,
     locations, and quests through the same ingestion pipeline used by the
     live dual-write. Deterministic fact ids make this idempotent: re-running
     it (or running it after dual-write has already populated the graph)
@@ -5491,16 +5491,23 @@ def sync_facts() -> str:
     facts_after = len(fact_db.facts)
     interactions_recorded = _interaction_count() - interactions_before
 
-    return (
+    result = (
         f"✅ Fact sync complete for campaign '{campaign.name}'.\n"
         f"- Events replayed: {len(events)}\n"
         f"- Entities swept: {len(npcs)} NPCs, {len(locations)} locations, {len(quests)} quests\n"
         f"- Facts: {facts_before} → {facts_after} (+{facts_after - facts_before})\n"
-        f"- NPC interactions recorded: {interactions_recorded}\n\n"
-        f"⚠️ The adventure log is global and has no campaign attribution — events "
-        f"from other campaigns sharing this data directory may have been ingested "
-        f"into this campaign's fact graph."
+        f"- NPC interactions recorded: {interactions_recorded}"
     )
+    legacy_count = storage.legacy_unattributed_event_count()
+    if legacy_count:
+        result += (
+            f"\n\nℹ️ {legacy_count} unattributed legacy event(s) at "
+            f"events/adventure_log.json were not replayed — the log predates "
+            f"per-campaign scoping and could not be auto-attributed (multiple "
+            f"campaigns share this data directory). Add a campaign field to "
+            f"those events to attribute them manually."
+        )
+    return result
 
 
 @mcp.tool

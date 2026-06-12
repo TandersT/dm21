@@ -1406,6 +1406,22 @@ class DnDStorage:
             if query_lower in event.title.lower() or query_lower in event.description.lower()
         ]
 
+    def legacy_unattributed_event_count(self) -> int:
+        """Count events stranded in the legacy global adventure log.
+
+        Returns 0 when the legacy log is absent, unreadable, or is the
+        active events file (monolithic / no-campaign state, where it is not
+        stranded but simply current).
+        """
+        legacy_file = self._get_legacy_events_file()
+        if not legacy_file.exists() or legacy_file == self._get_events_file():
+            return 0
+        try:
+            with open(legacy_file, 'r', encoding='utf-8') as f:
+                return len(json.load(f))
+        except (json.JSONDecodeError, OSError, ValueError):
+            return 0
+
     # Library Bindings Management
     def enable_library_source(
         self,

@@ -192,10 +192,6 @@ class TestSyncFacts:
         assert "5" in result
         assert "interactions recorded: 1" in result
 
-    def test_warns_about_multi_campaign_attribution(self, m, populated_storage):
-        result = m.sync_facts.fn()
-        assert "global" in result.lower()
-
     def test_second_run_converges(self, m, populated_storage):
         s = populated_storage
         m.sync_facts.fn()
