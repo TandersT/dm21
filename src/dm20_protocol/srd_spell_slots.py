@@ -30,7 +30,8 @@ _FULL_CASTER_SLOTS: dict[int, list[int]] = {
     20: [4, 3, 3, 3, 3, 2, 2, 1, 1],
 }
 
-# Class name -> caster type (matches SpellcastingInfo.caster_type literals).
+# Class name -> caster type. A superset of SpellcastingInfo.caster_type
+# literals: "artificer" is a half caster that rounds up (slots from level 1).
 _CASTER_TYPE_BY_CLASS: dict[str, str] = {
     "bard": "full",
     "cleric": "full",
@@ -39,7 +40,7 @@ _CASTER_TYPE_BY_CLASS: dict[str, str] = {
     "wizard": "full",
     "paladin": "half",
     "ranger": "half",
-    "artificer": "half",
+    "artificer": "artificer",
     "warlock": "pact",
 }
 
@@ -47,6 +48,7 @@ _CASTER_TYPE_BY_CLASS: dict[str, str] = {
 def slots_for_caster_type(caster_type: str, level: int) -> dict[int, int]:
     """Spell slot maximums {spell_level: count} for a caster type and level.
 
+    Accepts the SpellcastingInfo.caster_type literals plus "artificer".
     Returns {} when the type is unknown or grants no slots at that level.
     """
     if level < 1 or level > 20:
@@ -61,6 +63,8 @@ def slots_for_caster_type(caster_type: str, level: int) -> dict[int, int]:
         effective_level = level
     elif caster_type == "half":
         effective_level = ceil(level / 2) if level >= 2 else 0
+    elif caster_type == "artificer":
+        effective_level = ceil(level / 2)
     elif caster_type == "third":
         effective_level = ceil(level / 3) if level >= 3 else 0
     else:

@@ -33,6 +33,13 @@ class TestSlotsForClass:
     def test_ranger_level_2(self):
         assert slots_for_class("Ranger", 2) == {1: 2}
 
+    def test_artificer_level_1_rounds_up(self):
+        # Artificer is a half caster that rounds up: slots from level 1.
+        assert slots_for_class("Artificer", 1) == {1: 2}
+
+    def test_artificer_level_5(self):
+        assert slots_for_class("Artificer", 5) == {1: 4, 2: 2}
+
     def test_warlock_level_1(self):
         assert slots_for_class("Warlock", 1) == {1: 1}
 

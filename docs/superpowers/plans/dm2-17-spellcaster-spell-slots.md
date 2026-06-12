@@ -42,7 +42,7 @@ Tests: `tests/test_character_model_v2.py` (new test class)
 File: `src/dm20_protocol/character_builder.py`
 Tests: `tests/test_character_builder.py`
 
-- In `create_character` step 6: when `class_def.spellcasting` is present but
+- In `CharacterBuilder.build` step 6: when `class_def.spellcasting` is present but
   `_get_spell_slots` returns `{}`, fall back to the SRD table — first by class
   name, then by `class_def.spellcasting.caster_type`.
 - Guard: don't override a legitimate empty result (half caster at level 1 gets

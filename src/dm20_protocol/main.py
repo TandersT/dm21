@@ -1045,9 +1045,10 @@ def _use_spell_slot_logic(character: Character, slot_level: int) -> str:
         repaired = character.heal_missing_spell_slots()
         if not repaired:
             if any(spell.level > 0 for spell in character.spells_known):
+                primary = character.classes[0]
                 return (
                     f"❌ {character.name} knows leveled spells but has no spell slot data, "
-                    f"and no SRD progression matches class '{character.classes[0].name}'. "
+                    f"and the SRD grants no slots for {primary.name} {primary.level}. "
                     f"Set spell_slots manually via update_character."
                 )
             return (
