@@ -16,6 +16,11 @@ from .models import KnowledgeEntry, KnowledgeSource, PlayerInteraction
 
 logger = logging.getLogger("dm20-protocol")
 
+# Confidence multiplier applied per propagation hop: one hop takes a certain
+# fact (1.0) to secondhand (0.75), two hops to rumor-grade (~0.56) — matching
+# the 1.0-certain / 0.5-rumor scale on KnowledgeEntry.
+DEFAULT_PROPAGATION_DECAY = 0.75
+
 
 class NPCKnowledgeTracker:
     """
@@ -135,7 +140,8 @@ class NPCKnowledgeTracker:
         npc_id: str,
         fact_id: str,
         revealed_by: str,
-        session: int
+        session: int,
+        confidence: float = 1.0
     ) -> None:
         """
         Record that information was revealed to an NPC by a player.
@@ -148,13 +154,14 @@ class NPCKnowledgeTracker:
             fact_id: ID of the fact being revealed
             revealed_by: Player character name who revealed the information
             session: Session number when revelation occurred
+            confidence: Certainty level (1.0 certain, 0.5 rumor)
         """
         self.add_knowledge(
             npc_id=npc_id,
             fact_id=fact_id,
             source=KnowledgeSource.TOLD_BY_PLAYER,
             session=session,
-            confidence=1.0,
+            confidence=confidence,
             source_entity=revealed_by
         )
 
@@ -163,43 +170,62 @@ class NPCKnowledgeTracker:
         from_npc: str,
         to_npc: str,
         fact_ids: list[str],
-        session: int
-    ) -> None:
+        session: int,
+        decay: float = DEFAULT_PROPAGATION_DECAY
+    ) -> list[str]:
         """
-        Transfer knowledge from one NPC to another.
+        Transfer knowledge from one NPC to another with confidence decay.
 
         Only facts that from_npc actually knows will be propagated.
-        Facts already known by to_npc are skipped.
+        Facts already known by to_npc are skipped. The receiving NPC's
+        confidence is the sender's confidence multiplied by decay — an NPC
+        cannot transmit more certainty than they hold.
 
         Args:
             from_npc: NPC ID who is sharing the knowledge
             to_npc: NPC ID who is receiving the knowledge
             fact_ids: List of fact IDs to propagate
             session: Session number when propagation occurred
-        """
-        from_knowledge = self.get_npc_knowledge(from_npc)
-        known_fact_ids = {entry.fact_id for entry in from_knowledge}
+            decay: Confidence multiplier per hop (default 0.75)
 
+        Returns:
+            List of fact IDs actually propagated to to_npc.
+        """
+        sender_confidence = {
+            entry.fact_id: entry.confidence
+            for entry in self.get_npc_knowledge(from_npc)
+        }
+
+        propagated: list[str] = []
         for fact_id in fact_ids:
-            # Only propagate if from_npc actually knows this fact
-            if fact_id not in known_fact_ids:
+            if fact_id not in sender_confidence:
                 logger.debug(
                     f"Skipping propagation of {fact_id} from {from_npc} to {to_npc}: "
                     f"{from_npc} doesn't know this fact"
                 )
                 continue
+            if self.npc_knows_fact(to_npc, fact_id):
+                logger.debug(
+                    f"Skipping propagation of {fact_id} from {from_npc} to {to_npc}: "
+                    f"{to_npc} already knows this fact"
+                )
+                continue
 
-            # Add knowledge to receiving NPC
             self.add_knowledge(
                 npc_id=to_npc,
                 fact_id=fact_id,
                 source=KnowledgeSource.TOLD_BY_NPC,
                 session=session,
-                confidence=1.0,
+                confidence=sender_confidence[fact_id] * decay,
                 source_entity=from_npc
             )
+            propagated.append(fact_id)
 
-        logger.debug(f"Propagated knowledge from {from_npc} to {to_npc} (session {session})")
+        logger.debug(
+            f"Propagated {len(propagated)} fact(s) from {from_npc} to {to_npc} "
+            f"(session {session}, decay {decay})"
+        )
+        return propagated
 
     def share_with_party(
         self,
@@ -455,5 +481,6 @@ class NPCKnowledgeTracker:
 
 
 __all__ = [
+    "DEFAULT_PROPAGATION_DECAY",
     "NPCKnowledgeTracker",
 ]
