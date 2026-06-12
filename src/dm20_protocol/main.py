@@ -5356,6 +5356,60 @@ def check_consistency(
     return "\n".join(lines)
 
 
+@mcp.tool
+def resolve_contradiction(
+    contradiction_id: Annotated[str, Field(description="Contradiction id from check_consistency output (e.g., 'ctr_1a2b3c4d')")],
+    strategy: Annotated[str, Field(description="Chosen resolution: retcon, explain, ignore, or flag (escalate to the human DM)")],
+    notes: Annotated[str | None, Field(description="Optional notes about the decision")] = None,
+) -> str:
+    """Persist a detected contradiction with the DM's chosen resolution.
+
+    Records the decision in contradictions.json. Resolution is bookkeeping
+    only: a retcon does not edit the conflicting fact — update it via the
+    usual write tools afterwards. Contradiction ids come from
+    check_consistency and are valid for the current session.
+    """
+    campaign = storage.get_current_campaign()
+    if not campaign:
+        return "No active campaign. Load or create a campaign first."
+
+    detector = storage.contradiction_detector
+    if detector is None:
+        return _CONTRADICTION_UNAVAILABLE
+
+    from .claudmaster.consistency.models import ResolutionStrategy
+
+    normalized = "flag_for_dm" if strategy == "flag" else strategy
+    try:
+        strategy_enum = ResolutionStrategy(normalized)
+    except ValueError:
+        valid = ", ".join(s.value for s in ResolutionStrategy)
+        return (
+            f"Invalid strategy '{strategy}'. Valid strategies: {valid} "
+            "(or 'flag' as shorthand for flag_for_dm)"
+        )
+
+    if not detector.resolve(contradiction_id, strategy_enum, notes):
+        return (
+            f"Contradiction '{contradiction_id}' not found. Detected contradictions "
+            "are session-scoped — re-run check_consistency to detect it again."
+        )
+
+    detector.save()
+
+    reminder = (
+        " Remember: resolving records the decision only — apply the retcon by "
+        "updating the conflicting fact/journal via the usual write tools."
+        if strategy_enum == ResolutionStrategy.RETCON
+        else ""
+    )
+    notes_text = f" Notes: {notes}" if notes else ""
+    return (
+        f"✅ Contradiction {contradiction_id} resolved as {strategy_enum.value} "
+        f"and persisted to contradictions.json.{notes_text}{reminder}"
+    )
+
+
 # --------------------------------------------------------------------------
 # Character Import Tools (Epic: D&D Beyond Character Import)
 # --------------------------------------------------------------------------

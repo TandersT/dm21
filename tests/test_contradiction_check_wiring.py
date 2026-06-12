@@ -102,3 +102,52 @@ class TestCheckConsistency:
         storage._contradiction_detector = None
         result = m.check_consistency.fn(statement=STATEMENT)
         assert "unavailable" in result.lower()
+
+
+# ── resolve_contradiction ───────────────────────────────────────────
+
+
+class TestResolveContradiction:
+    def _detect(self, m, storage) -> str:
+        _seed_fact(storage)
+        m.check_consistency.fn(statement=STATEMENT)
+        pending_ids = list(storage.contradiction_detector._pending)
+        assert len(pending_ids) == 1
+        return pending_ids[0]
+
+    def test_resolve_persists_with_strategy_and_notes(self, m, storage):
+        cid = self._detect(m, storage)
+        result = m.resolve_contradiction.fn(
+            contradiction_id=cid, strategy="retcon", notes="He died offscreen"
+        )
+        assert "persisted" in result
+        reloaded = ContradictionDetector(
+            storage.fact_db,
+            campaign_path=storage.contradiction_detector._campaign_path,
+        )
+        contradictions = reloaded.get_all_contradictions()
+        assert len(contradictions) == 1
+        assert contradictions[0].id == cid
+        assert contradictions[0].resolved is True
+        assert contradictions[0].resolution == ResolutionStrategy.RETCON
+        assert contradictions[0].resolution_notes == "He died offscreen"
+
+    def test_flag_alias_maps_to_flag_for_dm(self, m, storage):
+        cid = self._detect(m, storage)
+        result = m.resolve_contradiction.fn(contradiction_id=cid, strategy="flag")
+        assert "flag_for_dm" in result
+
+    def test_retcon_reminds_to_update_the_fact(self, m, storage):
+        cid = self._detect(m, storage)
+        result = m.resolve_contradiction.fn(contradiction_id=cid, strategy="retcon")
+        assert "write tools" in result
+
+    def test_unknown_id_explains_session_scope(self, m, storage):
+        result = m.resolve_contradiction.fn(contradiction_id="ctr_nope", strategy="ignore")
+        assert "not found" in result
+        assert "check_consistency" in result
+
+    def test_invalid_strategy_lists_valid_values(self, m, storage):
+        result = m.resolve_contradiction.fn(contradiction_id="ctr_x", strategy="bogus")
+        assert "Invalid strategy" in result
+        assert "retcon" in result
