@@ -576,6 +576,65 @@ class TestSpellSlots:
         assert char.spell_slots == {}
         assert char.spellcasting_ability is None
 
+    def test_caster_without_slot_table_falls_back_to_srd(self):
+        """A rulebook caster class lacking slot data must not yield empty slots."""
+        wizard = make_wizard_def(
+            spellcasting=SpellcastingInfo(
+                level=1,
+                spellcasting_ability="INT",
+                caster_type="full",
+                spell_slots=None,
+            ),
+        )
+        manager = make_mock_manager(class_def=wizard, race_def=make_human_def())
+        builder = CharacterBuilder(manager)
+        char = builder.build("Test", "Wizard", "Human", 5)
+        assert char.spell_slots == {1: 4, 2: 3, 3: 2}
+
+    def test_caster_missing_level_entry_falls_back_to_srd(self):
+        """The default wizard def has no level-4 slot entry; SRD fills the gap."""
+        manager = make_mock_manager(
+            class_def=make_wizard_def(),
+            race_def=make_human_def(),
+        )
+        builder = CharacterBuilder(manager)
+        char = builder.build("Test", "Wizard", "Human", 4)
+        assert char.spell_slots == {1: 4, 2: 3}
+
+    def test_unknown_caster_class_uses_rulebook_caster_type(self):
+        """Homebrew class name unknown to the SRD table: caster_type decides."""
+        homebrew = make_wizard_def(
+            index="homebrewmancer",
+            name="Homebrewmancer",
+            spellcasting=SpellcastingInfo(
+                level=1,
+                spellcasting_ability="CHA",
+                caster_type="half",
+                spell_slots=None,
+            ),
+        )
+        manager = make_mock_manager(class_def=homebrew, race_def=make_human_def())
+        builder = CharacterBuilder(manager)
+        char = builder.build("Test", "Homebrewmancer", "Human", 6)
+        assert char.spell_slots == {1: 4, 2: 2}
+
+    def test_known_class_name_wins_over_caster_type(self):
+        """Paladin level 1 has no slots even if caster_type defaulted to full."""
+        paladin = make_wizard_def(
+            index="paladin",
+            name="Paladin",
+            spellcasting=SpellcastingInfo(
+                level=2,
+                spellcasting_ability="CHA",
+                # caster_type defaults to "full" when a rulebook source omits it
+                spell_slots=None,
+            ),
+        )
+        manager = make_mock_manager(class_def=paladin, race_def=make_human_def())
+        builder = CharacterBuilder(manager)
+        char = builder.build("Test", "Paladin", "Human", 1)
+        assert char.spell_slots == {}
+
 
 # ---------------------------------------------------------------------------
 # Equipment
