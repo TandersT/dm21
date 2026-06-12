@@ -1402,6 +1402,33 @@ def _resolve_npc(name_or_id: str) -> NPC | None:
     )
 
 
+def _content_fact_id(content: str) -> str:
+    """Deterministic content-derived fact id (pinned formula, DM2-7).
+
+    Identical content (case/whitespace-insensitive) converges on the same
+    fact node across record_party_fact and the NPC knowledge tools.
+    """
+    normalized = content.strip().lower()
+    return f"pfact_{hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:12]}"
+
+
+def _resolve_fact_id(fact_ref: str) -> str | None:
+    """Resolve a fact reference (existing fact id or fact content) to a fact id.
+
+    Returns the id of an existing fact — the literal id if it exists, else
+    the content-derived id if that exists — or None when neither does.
+    """
+    fact_db = storage.fact_db
+    if fact_db is None:
+        return None
+    if fact_db.get_fact(fact_ref) is not None:
+        return fact_ref
+    content_id = _content_fact_id(fact_ref)
+    if fact_db.get_fact(content_id) is not None:
+        return content_id
+    return None
+
+
 def _ingest_to_fact_graph(ingest_fn) -> None:
     """Best-effort dual-write into the fact graph.
 
@@ -4978,7 +5005,7 @@ def record_party_fact(
 
     # Deterministic content-derived id: identical content converges on the
     # same fact, and learn_fact's fact_id dedupe makes repeats a no-op.
-    fact_id = f"pfact_{hashlib.sha256(content.lower().encode('utf-8')).hexdigest()[:12]}"
+    fact_id = _content_fact_id(content)
 
     if fact_db.get_fact(fact_id) is None:
         fact_db.add_fact(
@@ -5087,6 +5114,332 @@ def record_npc_interaction(
         f"✅ Recorded {interaction_type} interaction with '{npc_obj.name}' "
         f"(session {session_number})."
     )
+
+
+_NPC_KNOWLEDGE_UNAVAILABLE = (
+    "NPC knowledge unavailable: the fact graph could not be loaded "
+    "for this campaign (split-format campaigns only)."
+)
+
+
+@mcp.tool
+def reveal_fact_to_npc(
+    npc: Annotated[str, Field(description="NPC name or ID — the NPC must already exist (create it with create_npc first)")],
+    fact: Annotated[str, Field(description="Fact id (from the fact graph) or free-text fact content; unrecognized content mints a new fact")],
+    source: Annotated[str, Field(description="How the NPC acquired it: witnessed, told_by_player, told_by_npc, common_knowledge, profession, rumor")] = "told_by_player",
+    source_entity: Annotated[str | None, Field(description="Who told them (PC name for told_by_player, NPC name for told_by_npc)")] = None,
+    confidence: Annotated[float, Field(description="Certainty: 1.0 certain → 0.5 rumor", ge=0.0, le=1.0)] = 1.0,
+    session: Annotated[int | None, Field(description="Session number (defaults to the current session)", ge=1)] = None,
+    category: Annotated[str, Field(description="Fact category, used only when minting a new fact: event, location, npc, item, quest, world")] = "world",
+) -> str:
+    """Reveal a fact to an NPC with a source and confidence.
+
+    Writes a knowledge entry on the NPC so future dialogue can reference it
+    (queryable via npc_knowledge). The fact is matched by id first, then by
+    content — the same content-derived id as record_party_fact, so party
+    facts and NPC rumors converge on one node; unrecognized content mints a
+    new fact. If the NPC already knows the fact, nothing changes: the
+    original confidence and source are kept.
+    """
+    campaign = storage.get_current_campaign()
+    if not campaign:
+        return "No active campaign. Load or create a campaign first."
+
+    fact_db = storage.fact_db
+    tracker = storage.npc_knowledge_tracker
+    if fact_db is None or tracker is None:
+        return _NPC_KNOWLEDGE_UNAVAILABLE
+
+    fact = fact.strip()
+    if not fact:
+        return "Fact cannot be empty."
+
+    npc_obj = _resolve_npc(npc)
+    if npc_obj is None:
+        return f"NPC '{npc}' not found. Create the NPC first with create_npc."
+
+    from .claudmaster.consistency.models import Fact, FactCategory, KnowledgeSource
+
+    try:
+        source_enum = KnowledgeSource(source)
+    except ValueError:
+        valid = ", ".join(s.value for s in KnowledgeSource)
+        return f"Invalid source '{source}'. Valid sources: {valid}"
+
+    session_number = session or _current_session_number()
+
+    fact_id = _resolve_fact_id(fact)
+    minted = False
+    needs_mint = fact_id is None
+    if needs_mint:
+        # A fact-id-shaped reference that resolved to nothing is a stale or
+        # mistyped id — refuse to mint a fact whose content is the id string.
+        if re.fullmatch(r"pfact_[0-9a-f]{12}", fact):
+            return f"Fact '{fact}' not found in the fact graph."
+        try:
+            category_enum = FactCategory(category)
+        except ValueError:
+            valid = ", ".join(c.value for c in FactCategory)
+            return f"Invalid category '{category}'. Valid categories: {valid}"
+        fact_id = _content_fact_id(fact)
+
+    if tracker.npc_knows_fact(npc_obj.id, fact_id):
+        return (
+            f"'{npc_obj.name}' already knows fact {fact_id} — no changes made "
+            "(the original confidence and source are kept)."
+        )
+
+    if needs_mint:
+        fact_db.add_fact(
+            Fact(
+                id=fact_id,
+                category=category_enum,
+                content=fact,
+                session_number=session_number,
+                source=source_entity or source_enum.value,
+            )
+        )
+        minted = True
+
+    if source_enum == KnowledgeSource.TOLD_BY_PLAYER:
+        tracker.reveal_to_npc(
+            npc_obj.id,
+            fact_id,
+            revealed_by=source_entity or "party",
+            session=session_number,
+            confidence=confidence,
+        )
+    else:
+        tracker.add_knowledge(
+            npc_obj.id,
+            fact_id,
+            source=source_enum,
+            session=session_number,
+            confidence=confidence,
+            source_entity=source_entity,
+        )
+
+    if minted:
+        fact_db.save()
+    tracker.save()
+
+    fact_content = fact_db.get_fact(fact_id).content
+    minted_note = " (new fact minted)" if minted else ""
+    return (
+        f"✅ Revealed fact {fact_id} to '{npc_obj.name}' via {source_enum.value} "
+        f"(confidence {confidence:.2f}, session {session_number}){minted_note}: {fact_content}"
+    )
+
+
+@mcp.tool
+def propagate_npc_knowledge(
+    from_npc: Annotated[str, Field(description="NPC name or ID sharing the knowledge")],
+    to_npc: Annotated[str, Field(description="NPC name or ID receiving the knowledge")],
+    facts: Annotated[str | None, Field(description="Fact ids or fact content to pass on — JSON array or comma-separated. Omit to share everything the source NPC knows")] = None,
+    decay: Annotated[float | None, Field(description="Confidence multiplier per hop, 0–1 (defaults to 0.75: certain → secondhand → rumor)", gt=0.0, le=1.0)] = None,
+    session: Annotated[int | None, Field(description="Session number (defaults to the current session)", ge=1)] = None,
+) -> str:
+    """Propagate knowledge from one NPC to another with confidence decay.
+
+    Models NPCs talking offscreen: the receiver learns the facts at the
+    sender's confidence multiplied by the decay factor, so retellings arrive
+    as rumors. Only facts the sender actually knows propagate; facts the
+    receiver already knows are left untouched.
+    """
+    campaign = storage.get_current_campaign()
+    if not campaign:
+        return "No active campaign. Load or create a campaign first."
+
+    fact_db = storage.fact_db
+    tracker = storage.npc_knowledge_tracker
+    if fact_db is None or tracker is None:
+        return _NPC_KNOWLEDGE_UNAVAILABLE
+
+    from_obj = _resolve_npc(from_npc)
+    if from_obj is None:
+        return f"NPC '{from_npc}' not found. Create the NPC first with create_npc."
+    to_obj = _resolve_npc(to_npc)
+    if to_obj is None:
+        return f"NPC '{to_npc}' not found. Create the NPC first with create_npc."
+    if from_obj.id == to_obj.id:
+        return f"'{from_obj.name}' cannot propagate knowledge to themselves."
+
+    from .claudmaster.consistency.npc_knowledge import DEFAULT_PROPAGATION_DECAY
+
+    sender_known = {e.fact_id for e in tracker.get_npc_knowledge(from_obj.id)}
+    if not sender_known:
+        return f"'{from_obj.name}' has no recorded knowledge to share."
+
+    unresolved: list[str] = []
+    if facts is None:
+        fact_ids = sorted(sender_known)
+    else:
+        refs = _parse_json_list(facts)
+        if not refs:
+            return (
+                "No facts provided — pass fact ids or fact content, or omit "
+                "the facts parameter to share everything the sender knows."
+            )
+        fact_ids = []
+        for ref in refs:
+            if ref in sender_known:
+                fact_ids.append(ref)
+                continue
+            resolved = _resolve_fact_id(ref)
+            if resolved is not None:
+                fact_ids.append(resolved)
+            else:
+                unresolved.append(ref)
+        fact_ids = list(dict.fromkeys(fact_ids))
+        if not fact_ids:
+            return (
+                "No facts resolved: "
+                + ", ".join(f"'{r}'" for r in unresolved)
+                + ". Pass fact ids or the exact fact content."
+            )
+
+    session_number = session or _current_session_number()
+    effective_decay = decay if decay is not None else DEFAULT_PROPAGATION_DECAY
+    receiver_known_before = {e.fact_id for e in tracker.get_npc_knowledge(to_obj.id)}
+
+    propagated = tracker.propagate_knowledge(
+        from_obj.id, to_obj.id, fact_ids, session_number, decay=effective_decay
+    )
+    if propagated:
+        tracker.save()
+
+    def _fact_line(fact_id: str) -> str:
+        fact = fact_db.get_fact(fact_id)
+        return fact.content if fact is not None else fact_id
+
+    receiver_entries = {e.fact_id: e for e in tracker.get_npc_knowledge(to_obj.id)}
+    lines = []
+    if propagated:
+        lines.append(
+            f"✅ '{from_obj.name}' passed {len(propagated)} fact(s) to '{to_obj.name}' "
+            f"(decay {effective_decay:g}, session {session_number}):"
+        )
+        for fact_id in propagated:
+            entry = receiver_entries[fact_id]
+            lines.append(
+                f"- {fact_id} (confidence {entry.confidence:.2f}): {_fact_line(fact_id)}"
+            )
+    else:
+        lines.append(
+            f"No knowledge propagated from '{from_obj.name}' to '{to_obj.name}'."
+        )
+
+    already_known = [f for f in fact_ids if f in receiver_known_before]
+    not_known = [f for f in fact_ids if f not in sender_known]
+    if already_known:
+        lines.append(
+            f"Skipped — '{to_obj.name}' already knows: " + ", ".join(already_known)
+        )
+    if not_known:
+        lines.append(
+            f"Skipped — '{from_obj.name}' doesn't know: " + ", ".join(not_known)
+        )
+    if unresolved:
+        lines.append(
+            "Skipped — not found in the fact graph: "
+            + ", ".join(f"'{r}'" for r in unresolved)
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool
+def npc_knowledge(
+    npc: Annotated[str | None, Field(description="NPC name or ID — list everything this NPC knows")] = None,
+    fact: Annotated[str | None, Field(description="Fact id or fact content — list which NPCs know it")] = None,
+) -> str:
+    """Query NPC knowledge: what an NPC knows, or which NPCs know a fact.
+
+    Read-only. Pass exactly one argument: npc for the NPC's full knowledge
+    (facts with confidence, source, and session, plus interaction count),
+    or fact for every NPC that holds it and how certain they are.
+    """
+    campaign = storage.get_current_campaign()
+    if not campaign:
+        return "No active campaign. Load or create a campaign first."
+
+    fact_db = storage.fact_db
+    tracker = storage.npc_knowledge_tracker
+    if fact_db is None or tracker is None:
+        return _NPC_KNOWLEDGE_UNAVAILABLE
+
+    if (npc is None) == (fact is None):
+        return "Provide exactly one of: npc (what they know) or fact (who knows it)."
+
+    names_by_id = {n.id: n.name for n in storage.list_npcs_detailed()}
+
+    if npc is not None:
+        npc_obj = _resolve_npc(npc)
+        if npc_obj is None:
+            return f"NPC '{npc}' not found. Create the NPC first with create_npc."
+
+        context = tracker.get_knowledge_context(npc_obj.id)
+        entries = context["knowledge_entries"]
+        if not entries:
+            return f"'{npc_obj.name}' has no recorded knowledge."
+
+        facts_by_id = {f.id: f for f in context["known_facts"]}
+        lines = [
+            f"## What '{npc_obj.name}' knows "
+            f"({context['fact_count']} fact(s), {context['interaction_count']} interaction(s))\n"
+        ]
+        for entry in entries:
+            known = facts_by_id.get(entry.fact_id)
+            content = (
+                known.content
+                if known is not None
+                else f"(fact {entry.fact_id} missing from the fact graph)"
+            )
+            source_text = entry.source.value
+            if entry.source_entity:
+                source_name = names_by_id.get(entry.source_entity, entry.source_entity)
+                source_text += f" (from {source_name})"
+            lines.append(f"### {content}")
+            lines.append(f"- **Fact id:** {entry.fact_id}")
+            lines.append(f"- **Source:** {source_text}")
+            lines.append(f"- **Confidence:** {entry.confidence:.2f}")
+            lines.append(f"- **Session:** {entry.acquired_session}")
+            lines.append("")
+        return "\n".join(lines)
+
+    fact = fact.strip()
+    if not fact:
+        return "Fact cannot be empty."
+    fact_id = _resolve_fact_id(fact)
+    if fact_id is None:
+        return f"Fact '{fact}' not found in the fact graph."
+    fact_obj = fact_db.get_fact(fact_id)
+
+    knower_ids = tracker.query_npcs_who_know(fact_id)
+    if not knower_ids:
+        return f"No NPCs know fact {fact_id}: {fact_obj.content}"
+
+    lines = [
+        f"## NPCs who know: {fact_obj.content}",
+        f"({len(knower_ids)} NPC(s), fact {fact_id})\n",
+    ]
+    for npc_id in knower_ids:
+        entry = next(
+            (e for e in tracker.get_npc_knowledge(npc_id) if e.fact_id == fact_id),
+            None,
+        )
+        name = names_by_id.get(npc_id, npc_id)
+        if entry is None:
+            lines.append(f"- **{name}**")
+            continue
+        source_text = entry.source.value
+        if entry.source_entity:
+            source_name = names_by_id.get(entry.source_entity, entry.source_entity)
+            source_text += f" (from {source_name})"
+        lines.append(
+            f"- **{name}** — confidence {entry.confidence:.2f}, {source_text}, "
+            f"session {entry.acquired_session}"
+        )
+    return "\n".join(lines)
 
 
 @mcp.tool

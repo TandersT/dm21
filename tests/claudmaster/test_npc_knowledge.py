@@ -945,3 +945,67 @@ class TestEdgeCases:
         context = tracker.get_knowledge_context("bandit")
         assert context["fact_count"] == 0
         assert context["interaction_count"] == 1
+
+
+class TestConfidenceDecay:
+    """Reveal confidence pass-through and propagation decay (DM2-13)."""
+
+    def _tracker(self, tmp_path):
+        campaign_path = tmp_path / "campaign"
+        fact_db = FactDatabase(campaign_path)
+        return NPCKnowledgeTracker(fact_db, campaign_path)
+
+    def test_reveal_to_npc_confidence_passthrough(self, tmp_path):
+        tracker = self._tracker(tmp_path)
+        tracker.reveal_to_npc(
+            "barkeep", "fact_001", revealed_by="Aldric", session=1, confidence=0.5
+        )
+        entry = tracker.get_npc_knowledge("barkeep")[0]
+        assert entry.confidence == 0.5
+        assert entry.source == KnowledgeSource.TOLD_BY_PLAYER
+        assert entry.source_entity == "Aldric"
+
+    def test_reveal_to_npc_defaults_to_certain(self, tmp_path):
+        tracker = self._tracker(tmp_path)
+        tracker.reveal_to_npc("barkeep", "fact_001", revealed_by="Aldric", session=1)
+        assert tracker.get_npc_knowledge("barkeep")[0].confidence == 1.0
+
+    def test_propagate_applies_decay_to_sender_confidence(self, tmp_path):
+        tracker = self._tracker(tmp_path)
+        tracker.add_knowledge(
+            "aragorn", "fact_001", KnowledgeSource.WITNESSED, 1, confidence=1.0
+        )
+        tracker.propagate_knowledge("aragorn", "boromir", ["fact_001"], session=2)
+        assert tracker.get_npc_knowledge("boromir")[0].confidence == pytest.approx(0.75)
+
+    def test_propagate_decay_compounds_over_hops(self, tmp_path):
+        tracker = self._tracker(tmp_path)
+        tracker.add_knowledge("a", "fact_001", KnowledgeSource.WITNESSED, 1, confidence=1.0)
+        tracker.propagate_knowledge("a", "b", ["fact_001"], session=2)
+        tracker.propagate_knowledge("b", "c", ["fact_001"], session=3)
+        assert tracker.get_npc_knowledge("c")[0].confidence == pytest.approx(0.5625)
+
+    def test_propagate_custom_decay(self, tmp_path):
+        tracker = self._tracker(tmp_path)
+        tracker.add_knowledge("a", "fact_001", KnowledgeSource.WITNESSED, 1, confidence=0.8)
+        tracker.propagate_knowledge("a", "b", ["fact_001"], session=2, decay=0.5)
+        assert tracker.get_npc_knowledge("b")[0].confidence == pytest.approx(0.4)
+
+    def test_propagate_returns_propagated_fact_ids(self, tmp_path):
+        tracker = self._tracker(tmp_path)
+        tracker.add_knowledge("a", "fact_001", KnowledgeSource.WITNESSED, 1)
+        tracker.add_knowledge("a", "fact_002", KnowledgeSource.WITNESSED, 1)
+        result = tracker.propagate_knowledge(
+            "a", "b", ["fact_001", "fact_002"], session=2
+        )
+        assert result == ["fact_001", "fact_002"]
+
+    def test_propagate_return_excludes_skips(self, tmp_path):
+        tracker = self._tracker(tmp_path)
+        tracker.add_knowledge("a", "fact_001", KnowledgeSource.WITNESSED, 1)
+        tracker.add_knowledge("b", "fact_001", KnowledgeSource.WITNESSED, 1)
+        # b already knows fact_001; a doesn't know fact_999
+        result = tracker.propagate_knowledge(
+            "a", "b", ["fact_001", "fact_999"], session=2
+        )
+        assert result == []
