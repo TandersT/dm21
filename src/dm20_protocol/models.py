@@ -572,6 +572,7 @@ class AdventureEvent(BaseModel):
     location: str | None = None
     tags: list[str] = Field(default_factory=list)
     importance: int = Field(ge=1, le=5, default=3)  # 1=minor, 5=major
+    campaign: str | None = None  # owning campaign; None = unattributed (pre-scoping)
 
 # Deferred import for Position to avoid circular dependency.
 # Position is defined in combat.positioning but referenced as a forward-ref

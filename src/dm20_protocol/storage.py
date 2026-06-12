@@ -1282,8 +1282,14 @@ class DnDStorage:
 
     # Adventure Log / Events
     def add_event(self, event: AdventureEvent) -> None:
-        """Add an event to the adventure log."""
+        """Add an event to the adventure log.
+
+        Stamps the current campaign on the event (when not already set) so
+        every caller gets campaign attribution.
+        """
         logger.info(f"➕ Adding event: '{event.title}' ({event.event_type})")
+        if event.campaign is None and self._current_campaign:
+            event.campaign = self._current_campaign.name
         self._events.append(event)
         self._save_events()
         logger.debug("✅ Event added and log saved.")
