@@ -214,7 +214,19 @@ class DnDStorage:
         return self.data_dir / "campaigns" / f"{safe_name}.json"
 
     def _get_events_file(self) -> Path:
-        """Get the file path for adventure events."""
+        """Get the file path for adventure events.
+
+        Split-format campaigns keep their own log in the campaign directory
+        (like the discovery/fact-graph/timeline state). Monolithic campaigns
+        and the no-campaign state fall back to the legacy global log.
+        """
+        if self._current_format == StorageFormat.SPLIT and self._current_campaign:
+            campaign_dir = self._split_backend._get_campaign_dir(self._current_campaign.name)
+            return campaign_dir / "adventure_log.json"
+        return self._get_legacy_events_file()
+
+    def _get_legacy_events_file(self) -> Path:
+        """Get the file path of the legacy global adventure log."""
         return self.data_dir / "events" / "adventure_log.json"
 
     def _detect_campaign_format(self, campaign_name: str) -> str:
@@ -436,8 +448,15 @@ class DnDStorage:
         logger.debug("✅ Events saved successfully.")
 
     def _load_events(self):
-        """Load adventure events from disk."""
+        """Load adventure events for the current campaign from disk.
+
+        Resets in-memory events first, so calling this on every campaign
+        switch is safe.
+        """
         logger.debug("📂 Attempting to load adventure events...")
+        self._events = []
+        if self._current_format == StorageFormat.SPLIT and self._current_campaign:
+            self._migrate_legacy_events()
         events_file = self._get_events_file()
         if not events_file.exists():
             logger.debug("❌ Adventure log file does not exist. No events loaded.")
@@ -450,6 +469,59 @@ class DnDStorage:
             logger.info(f"✅ Successfully loaded {len(self._events)} events.")
         except (json.JSONDecodeError, ValueError) as e:
             logger.error(f"❌ Error loading events: {e}")
+
+    def _migrate_legacy_events(self) -> None:
+        """One-shot migration of the legacy global adventure log (DM2-14).
+
+        With exactly one campaign in the data directory, attribution is
+        unambiguous: stamp the legacy events with the campaign name, merge
+        them into the campaign's own log (skipping ids already present), and
+        vacate the legacy path by renaming the file (data stays recoverable).
+        With multiple campaigns the events cannot be attributed — leave the
+        file alone and warn.
+
+        Failures are logged and swallowed: migration problems must never
+        break campaign loading.
+        """
+        legacy_file = self._get_legacy_events_file()
+        if not legacy_file.exists() or not self._current_campaign:
+            return
+
+        try:
+            campaigns = self.list_campaigns()
+            if campaigns != [self._current_campaign.name]:
+                logger.warning(
+                    f"⚠️ Legacy global adventure log at {legacy_file} left unmigrated: "
+                    f"{len(campaigns)} campaigns exist, so its events cannot be attributed. "
+                    "They are excluded from campaign views; attribute them manually if needed."
+                )
+                return
+
+            with open(legacy_file, 'r', encoding='utf-8') as f:
+                legacy_events = [AdventureEvent.model_validate(e) for e in json.load(f)]
+            for event in legacy_events:
+                if event.campaign is None:
+                    event.campaign = self._current_campaign.name
+
+            events_file = self._get_events_file()
+            existing: list[AdventureEvent] = []
+            if events_file.exists():
+                with open(events_file, 'r', encoding='utf-8') as f:
+                    existing = [AdventureEvent.model_validate(e) for e in json.load(f)]
+            known_ids = {e.id for e in existing}
+            merged = existing + [e for e in legacy_events if e.id not in known_ids]
+
+            events_data = [event.model_dump(mode='json') for event in merged]
+            with open(events_file, 'w', encoding='utf-8') as f:
+                json.dump(events_data, f, default=str)
+
+            legacy_file.rename(legacy_file.parent / (legacy_file.name + ".migrated"))
+            logger.info(
+                f"✅ Migrated {len(legacy_events)} legacy events to campaign "
+                f"'{self._current_campaign.name}' ({events_file})."
+            )
+        except Exception as e:
+            logger.warning(f"Legacy adventure log migration failed (load unaffected): {e}")
 
     # Campaign Management
     def create_campaign(self, name: str, description: str, dm_name: str | None = None, setting: str | Path | None = None, rules_version: str = "2024", interaction_mode: str = "classic") -> Campaign:
@@ -515,6 +587,10 @@ class DnDStorage:
         if self._timeline_tracker is not None:
             self._timeline_tracker.anchored = True
             self._timeline_tracker.save()
+
+        # Load the campaign's adventure log (runs legacy migration when this
+        # is the only campaign in the data directory)
+        self._load_events()
 
         logger.info(f"✅ Campaign '{name}' created and set as active using {self._current_format} format (rules: {rules_version}, mode: {interaction_mode}).")
         return campaign
@@ -592,6 +668,10 @@ class DnDStorage:
         # Load timeline tracker (split campaigns only)
         self._load_timeline_tracker()
 
+        # Load the campaign's adventure log (split campaigns have their own;
+        # monolithic campaigns fall back to the legacy global log)
+        self._load_events()
+
         logger.info(f"✅ Successfully loaded campaign '{name}' using {storage_format} format (rules: {self._rules_version}).")
         return self._current_campaign
 
@@ -653,6 +733,7 @@ class DnDStorage:
             self._party_knowledge = None
             self._timeline_tracker = None
             self._contradiction_detector = None
+            self._events = []
             if hasattr(self, '_split_backend'):
                 self._split_backend._current_campaign = None
             logger.info(f"🧹 Cleared active campaign state (was: '{name}')")
@@ -1282,8 +1363,14 @@ class DnDStorage:
 
     # Adventure Log / Events
     def add_event(self, event: AdventureEvent) -> None:
-        """Add an event to the adventure log."""
+        """Add an event to the adventure log.
+
+        Stamps the current campaign on the event (when not already set) so
+        every caller gets campaign attribution.
+        """
         logger.info(f"➕ Adding event: '{event.title}' ({event.event_type})")
+        if event.campaign is None and self._current_campaign:
+            event.campaign = self._current_campaign.name
         self._events.append(event)
         self._save_events()
         logger.debug("✅ Event added and log saved.")
@@ -1318,6 +1405,22 @@ class DnDStorage:
             event for event in self._events
             if query_lower in event.title.lower() or query_lower in event.description.lower()
         ]
+
+    def legacy_unattributed_event_count(self) -> int:
+        """Count events stranded in the legacy global adventure log.
+
+        Returns 0 when the legacy log is absent, unreadable, or is the
+        active events file (monolithic / no-campaign state, where it is not
+        stranded but simply current).
+        """
+        legacy_file = self._get_legacy_events_file()
+        if not legacy_file.exists() or legacy_file == self._get_events_file():
+            return 0
+        try:
+            with open(legacy_file, 'r', encoding='utf-8') as f:
+                return len(json.load(f))
+        except (json.JSONDecodeError, OSError, ValueError):
+            return 0
 
     # Library Bindings Management
     def enable_library_source(

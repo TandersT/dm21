@@ -36,6 +36,7 @@ campaigns/
     ├── encounters.json             # Combat encounters (dict of name -> CombatEncounter)
     ├── game_state.json             # Current game state (location, combat status, party level, funds)
     ├── claudmaster-config.json     # Claudmaster AI DM configuration for this campaign
+    ├── adventure_log.json          # Campaign-scoped adventure log (AdventureEvent array)
     │
     ├── sessions/                   # Session notes
     │   └── session-{NNN}.json      # One file per session (NNN = zero-padded number)
@@ -64,15 +65,26 @@ campaigns/
 
 **File naming**: Campaign names are sanitized for the filesystem (alphanumeric, spaces, hyphens, underscores only).
 
-## Events Directory
+## Events Directory (legacy)
 
 - **Path**: `events/`
-- **Purpose**: Stores the global adventure log, shared across all campaigns.
+- **Purpose**: Legacy fallback adventure log. Split-format campaigns store
+  their log inside the campaign directory (`campaigns/{name}/adventure_log.json`);
+  this global file is only used by monolithic campaigns and when no campaign
+  is loaded.
 
 ```
 events/
-└── adventure_log.json              # JSON array of all AdventureEvent objects
+├── adventure_log.json              # Legacy/fallback JSON array of AdventureEvent objects
+└── adventure_log.json.migrated     # Backup left behind after one-shot migration
 ```
+
+When a split campaign is loaded and it is the only campaign in the data
+directory, any legacy global log is migrated into the campaign's own log
+(events stamped with the campaign name) and the global file is renamed to
+`adventure_log.json.migrated`. With multiple campaigns the legacy events
+cannot be attributed automatically and the file is left in place, excluded
+from campaign views.
 
 ## Library Directory
 
@@ -126,7 +138,8 @@ rulebook_cache/
 | `campaigns/{name}/rulebooks/` | Campaign rulebook config and custom sources | `DnDStorage.create_campaign` |
 | `campaigns/{name}/sessions/` | Session notes (one file per session) | `SplitStorageBackend._ensure_campaign_structure` |
 | `campaigns/{name}/claudmaster_sessions/` | Paused/ended Claudmaster session state | `SessionSerializer.save_session` |
-| `events/` | Global adventure log | `DnDStorage.__init__` |
+| `campaigns/{name}/adventure_log.json` | Campaign-scoped adventure log | `DnDStorage._save_events` |
+| `events/` | Legacy/fallback adventure log | `DnDStorage.__init__` |
 | `library/pdfs/` | User-provided PDF/Markdown source files | `LibraryManager.ensure_directories` |
 | `library/index/` | Auto-generated TOC indexes | `LibraryManager.ensure_directories` |
 | `library/extracted/` | Extracted CustomSource JSON files | `LibraryManager.ensure_directories` |

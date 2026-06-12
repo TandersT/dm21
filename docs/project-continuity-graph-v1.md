@@ -47,7 +47,7 @@ All design axes were pinned by the user during the run; the one override is flag
 
 - `get_npc` resolution is still exact, case-sensitive name match; the lenient `_resolve_npc` helper (id / case-insensitive name) is only used by `record_npc_interaction` (sweep follow-up candidate).
 - `record_npc_interaction` dedupe is exact-summary only — a rephrased summary of the same interaction records a duplicate (sweep info finding).
-- The adventure log is global with no campaign attribution: `sync_facts` may ingest events from other campaigns sharing the same data directory (the tool warns about this in its output).
+- ~~The adventure log is global with no campaign attribution: `sync_facts` may ingest events from other campaigns sharing the same data directory (the tool warns about this in its output).~~ Resolved by DM2-14: split-format campaigns now keep a per-campaign log (`campaigns/{name}/adventure_log.json`) with one-shot migration of the legacy global log; `sync_facts` replays only the current campaign's events.
 - TimelineTracker exists in `claudmaster/consistency` but is not wired into the recap (`get_session_recap` passes `timeline=None`).
 - Entity stores are name-keyed: re-creating an NPC/location/quest under an existing name mints a new entity id and orphans the old fact (flagged in PR #1 as a follow-up for the read path).
 - The fact graph is available for split-format campaigns only; legacy-format campaigns degrade to `None` accessors and the tools report "could not be loaded".
