@@ -76,6 +76,11 @@ class TestSetGameTime:
         result = m.set_game_time.fn(day=2)
         assert "unavailable" in result.lower()
 
+    def test_requires_campaign(self, m, storage):
+        storage._current_campaign = None
+        result = m.set_game_time.fn(day=2)
+        assert "No active campaign" in result
+
 
 # ── advance_game_time ───────────────────────────────────────────────
 
@@ -109,6 +114,11 @@ class TestAdvanceGameTime:
         storage._timeline_tracker = None
         result = m.advance_game_time.fn(amount=1, unit="day")
         assert "unavailable" in result.lower()
+
+    def test_requires_campaign(self, m, storage):
+        storage._current_campaign = None
+        result = m.advance_game_time.fn(amount=1, unit="day")
+        assert "No active campaign" in result
 
 
 # ── get_timeline ────────────────────────────────────────────────────
@@ -146,6 +156,11 @@ class TestGetTimeline:
         storage._timeline_tracker = None
         result = m.get_timeline.fn()
         assert "unavailable" in result.lower()
+
+    def test_requires_campaign(self, m, storage):
+        storage._current_campaign = None
+        result = m.get_timeline.fn()
+        assert "No active campaign" in result
 
 
 # ── add_event stamping hook ─────────────────────────────────────────
