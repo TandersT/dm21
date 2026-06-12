@@ -569,8 +569,8 @@ async def test_download_caching(parser: AdventureParser, cache_dir: Path):
 
         await parser.parse_adventure("LMoP")
 
-    # Check cache file was created
-    cache_file = cache_dir / "adventures" / "cache" / "content" / "LMoP.json"
+    # Check cache file was created (parser normalizes IDs to lowercase)
+    cache_file = cache_dir / "adventures" / "cache" / "content" / "lmop.json"
     assert cache_file.exists()
 
     # Check content
@@ -582,8 +582,8 @@ async def test_use_cached_data(parser: AdventureParser, cache_dir: Path):
     """Test that cached data is used instead of downloading."""
     mock_data = create_mock_adventure_data()
 
-    # Pre-populate cache
-    cache_file = cache_dir / "adventures" / "cache" / "content" / "LMoP.json"
+    # Pre-populate cache (parser looks up IDs lowercased)
+    cache_file = cache_dir / "adventures" / "cache" / "content" / "lmop.json"
     cache_file.parent.mkdir(parents=True, exist_ok=True)
     cache_file.write_text(json.dumps(mock_data))
 
