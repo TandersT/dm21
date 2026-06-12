@@ -20,6 +20,7 @@ from .models import (
     Spell,
 )
 from .rulebooks.manager import RulebookManager
+from .srd_spell_slots import caster_type_for_class, slots_for_caster_type
 from .rulebooks.models import (
     BackgroundDefinition,
     ClassDefinition,
@@ -203,6 +204,14 @@ class CharacterBuilder:
                 class_def.spellcasting.spellcasting_ability.lower(),
             )
             spell_slots = self._get_spell_slots(class_def, level)
+            if not spell_slots:
+                # Rulebook class def lacks slot data for this level; fall back
+                # to the SRD progression (class name wins over caster_type).
+                caster_type = (
+                    caster_type_for_class(class_def.name)
+                    or class_def.spellcasting.caster_type
+                )
+                spell_slots = slots_for_caster_type(caster_type, level)
 
         # 6b. Starting spells
         starting_spells = self._get_starting_spells(class_def, level)
@@ -703,7 +712,7 @@ class CharacterBuilder:
                 ))
 
             # Pick level 1+ spells up to spells_known_count
-            slot_count = len(class_def.spellcasting.spell_slots.get(level, []))
+            slot_count = len((class_def.spellcasting.spell_slots or {}).get(level, []))
             max_spell_level = max(slot_count, 1)
             spell_pool = [
                 s for s in available_spells

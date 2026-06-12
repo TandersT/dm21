@@ -287,3 +287,91 @@ class TestBackwardCompatibility:
         assert c2.experience_points == 6500
         assert c2.conditions == ["blessed"]
         assert c2.tool_proficiencies == ["Smith's Tools"]
+
+
+# ---------------------------------------------------------------------------
+# Spell Slot Self-Heal Tests (DM2-17)
+# ---------------------------------------------------------------------------
+
+def _spell(name: str, level: int) -> dict:
+    """Minimal spell dict for model_validate payloads."""
+    return {
+        "name": name,
+        "level": level,
+        "school": "abjuration",
+        "casting_time": "1 action",
+        "duration": "instantaneous",
+        "components": ["V", "S"],
+        "description": f"A {name} spell.",
+    }
+
+
+class TestSpellSlotSelfHeal:
+    def test_broken_caster_heals_on_load(self):
+        """A caster with leveled spells but empty slots gets SRD slots on load."""
+        data = dict(
+            V1_CHARACTER_JSON,
+            character_class={"name": "Sorcerer", "level": 1, "hit_dice": "1d6", "subclass": None},
+            spellcasting_ability="charisma",
+            spells_known=[_spell("Mage Armor", 1), _spell("Shield", 1)],
+        )
+        char = Character.model_validate(data)
+        assert char.spell_slots == {1: 2}
+        assert char.spell_slots_used == {}
+
+    def test_cantrip_only_caster_untouched(self):
+        data = dict(
+            V1_CHARACTER_JSON,
+            character_class={"name": "Wizard", "level": 1, "hit_dice": "1d6", "subclass": None},
+            spells_known=[_spell("Fire Bolt", 0)],
+        )
+        char = Character.model_validate(data)
+        assert char.spell_slots == {}
+
+    def test_non_caster_untouched(self):
+        char = Character.model_validate(dict(V1_CHARACTER_JSON))
+        assert char.spell_slots == {}
+
+    def test_populated_slots_untouched(self):
+        """Existing (e.g. rulebook-derived) slot data is never overridden."""
+        data = dict(
+            V1_CHARACTER_JSON,
+            character_class={"name": "Wizard", "level": 5, "hit_dice": "1d6", "subclass": None},
+            spell_slots={1: 99},
+            spells_known=[_spell("Magic Missile", 1)],
+        )
+        char = Character.model_validate(data)
+        assert char.spell_slots == {1: 99}
+
+    def test_unknown_class_not_healed(self):
+        data = dict(
+            V1_CHARACTER_JSON,
+            character_class={"name": "Homebrewmancer", "level": 3, "hit_dice": "1d8", "subclass": None},
+            spells_known=[_spell("Magic Missile", 1)],
+        )
+        char = Character.model_validate(data)
+        assert char.spell_slots == {}
+
+    def test_heal_helper_returns_whether_it_repaired(self):
+        char = make_character(
+            character_class=CharacterClass(name="Wizard", level=5, hit_dice="1d6"),
+        )
+        char.spells_known = [Spell.model_validate(_spell("Fireball", 3))]
+        char.spell_slots = {}
+        assert char.heal_missing_spell_slots() is True
+        assert char.spell_slots == {1: 4, 2: 3, 3: 2}
+        # Second call is a no-op.
+        assert char.heal_missing_spell_slots() is False
+
+    def test_multiclass_heals_from_primary_class(self):
+        data = dict(
+            V1_CHARACTER_JSON,
+            spells_known=[_spell("Cure Wounds", 1)],
+        )
+        data.pop("character_class")
+        data["classes"] = [
+            {"name": "Cleric", "level": 3, "hit_dice": "1d8", "subclass": None},
+            {"name": "Fighter", "level": 2, "hit_dice": "1d10", "subclass": None},
+        ]
+        char = Character.model_validate(data)
+        assert char.spell_slots == {1: 4, 2: 2}

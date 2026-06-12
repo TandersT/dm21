@@ -1039,6 +1039,22 @@ def _use_spell_slot_logic(character: Character, slot_level: int) -> str:
     if slot_level < 1 or slot_level > 9:
         return "❌ Spell slot level must be between 1 and 9."
 
+    repaired = False
+    if not character.spell_slots:
+        # Last-resort heal for casters persisted without slot data.
+        repaired = character.heal_missing_spell_slots()
+        if not repaired:
+            if any(spell.level > 0 for spell in character.spells_known):
+                return (
+                    f"❌ {character.name} knows leveled spells but has no spell slot data, "
+                    f"and no SRD progression matches class '{character.classes[0].name}'. "
+                    f"Set spell_slots manually via update_character."
+                )
+            return (
+                f"❌ {character.name} has no spell slots — they don't appear to be "
+                f"a spellcaster (no leveled spells known)."
+            )
+
     max_slots = character.spell_slots.get(slot_level, 0)
     if max_slots == 0:
         return f"❌ {character.name} has no level {slot_level} spell slots."
@@ -1050,7 +1066,8 @@ def _use_spell_slot_logic(character: Character, slot_level: int) -> str:
 
     character.spell_slots_used[slot_level] = used + 1
     remaining = available - 1
-    return f"✅ {character.name} used a level {slot_level} spell slot ({remaining}/{max_slots} remaining)"
+    note = " (spell slots were missing and have been repaired)" if repaired else ""
+    return f"✅ {character.name} used a level {slot_level} spell slot ({remaining}/{max_slots} remaining){note}"
 
 
 @mcp.tool

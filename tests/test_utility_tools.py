@@ -168,6 +168,47 @@ class TestUseSpellSlotLogic:
         result = _use_spell_slot_logic(char, 2)
         assert "❌" in result
 
+    def test_broken_caster_auto_repairs_and_consumes(self):
+        """Leveled spells known + empty slots: repair via SRD, consume, note it."""
+        char = make_character(spells_known=[make_spell("Fireball", 3)])
+        char.spell_slots = {}  # simulate a broken persisted character
+        result = _use_spell_slot_logic(char, 1)
+        assert "✅" in result
+        assert "3/4 remaining" in result
+        assert "spell slots were missing and have been repaired" in result
+        assert char.spell_slots == {1: 4, 2: 3, 3: 2}
+        assert char.spell_slots_used[1] == 1
+
+    def test_non_caster_gets_clear_error(self):
+        char = make_character()  # no spells known, no slots
+        result = _use_spell_slot_logic(char, 1)
+        assert "❌" in result
+        assert "don't appear to be a spellcaster" in result
+        assert char.spell_slots == {}
+
+    def test_repaired_caster_still_lacks_requested_level(self):
+        """Repair happens, but a too-high slot level still errors clearly."""
+        char = make_character(
+            level=1, hit_dice="1d6", spells_known=[make_spell("Mage Armor", 1)]
+        )
+        char.spell_slots = {}
+        result = _use_spell_slot_logic(char, 5)
+        assert "❌" in result
+        assert "no level 5 spell slots" in result
+        assert char.spell_slots == {1: 2}
+        assert char.spell_slots_used == {}
+
+    def test_unrepairable_caster_gets_actionable_error(self):
+        """Unknown class: no SRD progression — point the DM at a manual fix."""
+        char = make_character(
+            class_name="Homebrewmancer",
+            spells_known=[make_spell("Mage Armor", 1)],
+        )
+        char.spell_slots = {}
+        result = _use_spell_slot_logic(char, 1)
+        assert "❌" in result
+        assert "update_character" in result
+
 
 # ─── Test: _add_spell_logic ──────────────────────────────────────────
 

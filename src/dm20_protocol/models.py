@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, model_validator
 from logging import Handler
 
 from .logutils import logger
+from .srd_spell_slots import slots_for_class
 
 
 class GameStats(BaseModel):
@@ -423,6 +424,34 @@ class Character(BaseModel):
         """Auto-calculate proficiency bonus from total level."""
         self.proficiency_bonus = 2 + (self.total_level - 1) // 4
         return self
+
+    @model_validator(mode="after")
+    def _heal_spell_slots(self) -> "Character":
+        """Self-heal casters that were persisted without spell slots."""
+        self.heal_missing_spell_slots()
+        return self
+
+    def heal_missing_spell_slots(self) -> bool:
+        """Populate empty spell_slots from the SRD progression for the primary class.
+
+        A character who knows leveled spells should have spell slots; older
+        creation/import paths could leave them empty. Returns True if slots
+        were populated, False if no repair was needed or possible. Existing
+        slot data (e.g. rulebook-derived) is never overridden.
+        """
+        if self.spell_slots:
+            return False
+        if not any(spell.level > 0 for spell in self.spells_known):
+            return False
+        slots = slots_for_class(self.classes[0].name, self.classes[0].level)
+        if not slots:
+            return False
+        self.spell_slots = slots
+        logger.info(
+            f"Repaired missing spell slots for {self.name} "
+            f"({self.classes[0].name} {self.classes[0].level}): {slots}"
+        )
+        return True
 
 
 class NPC(BaseModel):
