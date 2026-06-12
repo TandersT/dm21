@@ -5159,15 +5159,28 @@ def reveal_fact_to_npc(
 
     session_number = session or _current_session_number()
 
-    minted = False
     fact_id = _resolve_fact_id(fact)
-    if fact_id is None:
+    minted = False
+    needs_mint = fact_id is None
+    if needs_mint:
+        # A fact-id-shaped reference that resolved to nothing is a stale or
+        # mistyped id — refuse to mint a fact whose content is the id string.
+        if re.fullmatch(r"pfact_[0-9a-f]{12}", fact):
+            return f"Fact '{fact}' not found in the fact graph."
         try:
             category_enum = FactCategory(category)
         except ValueError:
             valid = ", ".join(c.value for c in FactCategory)
             return f"Invalid category '{category}'. Valid categories: {valid}"
         fact_id = _content_fact_id(fact)
+
+    if tracker.npc_knows_fact(npc_obj.id, fact_id):
+        return (
+            f"'{npc_obj.name}' already knows fact {fact_id} — no changes made "
+            "(the original confidence and source are kept)."
+        )
+
+    if needs_mint:
         fact_db.add_fact(
             Fact(
                 id=fact_id,
@@ -5178,12 +5191,6 @@ def reveal_fact_to_npc(
             )
         )
         minted = True
-
-    if tracker.npc_knows_fact(npc_obj.id, fact_id):
-        return (
-            f"'{npc_obj.name}' already knows fact {fact_id} — no changes made "
-            "(the original confidence and source are kept)."
-        )
 
     if source_enum == KnowledgeSource.TOLD_BY_PLAYER:
         tracker.reveal_to_npc(
@@ -5258,8 +5265,14 @@ def propagate_npc_knowledge(
     if facts is None:
         fact_ids = sorted(sender_known)
     else:
+        refs = _parse_json_list(facts)
+        if not refs:
+            return (
+                "No facts provided — pass fact ids or fact content, or omit "
+                "the facts parameter to share everything the sender knows."
+            )
         fact_ids = []
-        for ref in _parse_json_list(facts):
+        for ref in refs:
             if ref in sender_known:
                 fact_ids.append(ref)
                 continue

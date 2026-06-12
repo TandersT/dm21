@@ -119,6 +119,23 @@ class TestRevealFactToNpc:
         assert len(entries) == 1
         assert entries[0].confidence == 1.0  # original entry kept
 
+    def test_resolves_npc_by_entity_id(self, m, storage):
+        m.create_npc.fn(name="Barkeep")
+        npc = storage.get_npc("Barkeep")
+        result = m.reveal_fact_to_npc.fn(npc=npc.id, fact="The mill burned down")
+        assert "✅" in result
+        assert storage.npc_knowledge_tracker.npc_knows_fact(
+            npc.id, _pfact_id("The mill burned down")
+        )
+
+    def test_stale_fact_id_is_not_minted(self, m, storage):
+        m.create_npc.fn(name="Barkeep")
+        result = m.reveal_fact_to_npc.fn(npc="Barkeep", fact="pfact_deadbeef0123")
+        assert "not found in the fact graph" in result
+        assert storage.fact_db.get_fact(_pfact_id("pfact_deadbeef0123")) is None
+        npc = storage.get_npc("Barkeep")
+        assert storage.npc_knowledge_tracker.get_npc_knowledge(npc.id) == []
+
     def test_unknown_npc_rejected(self, m, storage):
         result = m.reveal_fact_to_npc.fn(npc="Strahd", fact="x")
         assert "not found" in result
@@ -194,6 +211,7 @@ class TestPropagateNpcKnowledge:
         assert entries[0].confidence == pytest.approx(0.75)
         assert entries[0].source.value == "told_by_npc"
         assert entries[0].source_entity == innkeeper.id
+        assert entries[0].acquired_session == 1
 
     def test_custom_decay(self, m, storage):
         _, captain = self._setup_two_npcs(m, storage)
@@ -242,6 +260,28 @@ class TestPropagateNpcKnowledge:
             from_npc="Innkeeper", to_npc="Captain", facts='["No such fact"]'
         )
         assert "No facts resolved" in result
+
+    def test_comma_separated_facts(self, m, storage):
+        self._setup_two_npcs(m, storage)
+        m.reveal_fact_to_npc.fn(
+            npc="Innkeeper", fact="The baron is broke", source="profession"
+        )
+        result = m.propagate_npc_knowledge.fn(
+            from_npc="Innkeeper",
+            to_npc="Captain",
+            facts="The mill burned down, The baron is broke",
+        )
+        assert "✅" in result
+        captain = storage.get_npc("Captain")
+        entries = storage.npc_knowledge_tracker.get_npc_knowledge(captain.id)
+        assert len(entries) == 2
+
+    def test_empty_facts_list_rejected(self, m, storage):
+        self._setup_two_npcs(m, storage)
+        result = m.propagate_npc_knowledge.fn(
+            from_npc="Innkeeper", to_npc="Captain", facts="[]"
+        )
+        assert "No facts provided" in result
 
     def test_sender_without_knowledge(self, m, storage):
         m.create_npc.fn(name="Innkeeper")
