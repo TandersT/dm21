@@ -5107,6 +5107,114 @@ def record_npc_interaction(
     )
 
 
+_NPC_KNOWLEDGE_UNAVAILABLE = (
+    "NPC knowledge unavailable: the fact graph could not be loaded "
+    "for this campaign (split-format campaigns only)."
+)
+
+
+@mcp.tool
+def reveal_fact_to_npc(
+    npc: Annotated[str, Field(description="NPC name or ID — the NPC must already exist (create it with create_npc first)")],
+    fact: Annotated[str, Field(description="Fact id (from the fact graph) or free-text fact content; unrecognized content mints a new fact")],
+    source: Annotated[str, Field(description="How the NPC acquired it: witnessed, told_by_player, told_by_npc, common_knowledge, profession, rumor")] = "told_by_player",
+    source_entity: Annotated[str | None, Field(description="Who told them (PC name for told_by_player, NPC name for told_by_npc)")] = None,
+    confidence: Annotated[float, Field(description="Certainty: 1.0 certain → 0.5 rumor", ge=0.0, le=1.0)] = 1.0,
+    session: Annotated[int | None, Field(description="Session number (defaults to the current session)", ge=1)] = None,
+    category: Annotated[str, Field(description="Fact category, used only when minting a new fact: event, location, npc, item, quest, world")] = "world",
+) -> str:
+    """Reveal a fact to an NPC with a source and confidence.
+
+    Writes a knowledge entry on the NPC so future dialogue can reference it
+    (queryable via npc_knowledge). The fact is matched by id first, then by
+    content — the same content-derived id as record_party_fact, so party
+    facts and NPC rumors converge on one node; unrecognized content mints a
+    new fact. If the NPC already knows the fact, nothing changes: the
+    original confidence and source are kept.
+    """
+    campaign = storage.get_current_campaign()
+    if not campaign:
+        return "No active campaign. Load or create a campaign first."
+
+    fact_db = storage.fact_db
+    tracker = storage.npc_knowledge_tracker
+    if fact_db is None or tracker is None:
+        return _NPC_KNOWLEDGE_UNAVAILABLE
+
+    fact = fact.strip()
+    if not fact:
+        return "Fact cannot be empty."
+
+    npc_obj = _resolve_npc(npc)
+    if npc_obj is None:
+        return f"NPC '{npc}' not found. Create the NPC first with create_npc."
+
+    from .claudmaster.consistency.models import Fact, FactCategory, KnowledgeSource
+
+    try:
+        source_enum = KnowledgeSource(source)
+    except ValueError:
+        valid = ", ".join(s.value for s in KnowledgeSource)
+        return f"Invalid source '{source}'. Valid sources: {valid}"
+
+    session_number = session or _current_session_number()
+
+    minted = False
+    fact_id = _resolve_fact_id(fact)
+    if fact_id is None:
+        try:
+            category_enum = FactCategory(category)
+        except ValueError:
+            valid = ", ".join(c.value for c in FactCategory)
+            return f"Invalid category '{category}'. Valid categories: {valid}"
+        fact_id = _content_fact_id(fact)
+        fact_db.add_fact(
+            Fact(
+                id=fact_id,
+                category=category_enum,
+                content=fact,
+                session_number=session_number,
+                source=source_entity or source_enum.value,
+            )
+        )
+        minted = True
+
+    if tracker.npc_knows_fact(npc_obj.id, fact_id):
+        return (
+            f"'{npc_obj.name}' already knows fact {fact_id} — no changes made "
+            "(the original confidence and source are kept)."
+        )
+
+    if source_enum == KnowledgeSource.TOLD_BY_PLAYER:
+        tracker.reveal_to_npc(
+            npc_obj.id,
+            fact_id,
+            revealed_by=source_entity or "party",
+            session=session_number,
+            confidence=confidence,
+        )
+    else:
+        tracker.add_knowledge(
+            npc_obj.id,
+            fact_id,
+            source=source_enum,
+            session=session_number,
+            confidence=confidence,
+            source_entity=source_entity,
+        )
+
+    if minted:
+        fact_db.save()
+    tracker.save()
+
+    fact_content = fact_db.get_fact(fact_id).content
+    minted_note = " (new fact minted)" if minted else ""
+    return (
+        f"✅ Revealed fact {fact_id} to '{npc_obj.name}' via {source_enum.value} "
+        f"(confidence {confidence:.2f}, session {session_number}){minted_note}: {fact_content}"
+    )
+
+
 @mcp.tool
 def sync_facts() -> str:
     """Backfill the fact graph from the existing journal and campaign entities.
