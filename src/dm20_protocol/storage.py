@@ -100,6 +100,7 @@ class DnDStorage:
         self._fact_db = None
         self._npc_knowledge_tracker = None
         self._party_knowledge = None
+        self._timeline_tracker = None
 
         # Load existing data
         logger.debug("📂 Loading initial data...")
@@ -507,6 +508,13 @@ class DnDStorage:
         # Initialize fact graph for the new campaign
         self._load_fact_graph()
 
+        # Initialize timeline for the new campaign — born anchored at the
+        # epoch: a fresh campaign's Day 1 is a genuine anchor (DM2-6 spike)
+        self._load_timeline_tracker()
+        if self._timeline_tracker is not None:
+            self._timeline_tracker.anchored = True
+            self._timeline_tracker.save()
+
         logger.info(f"✅ Campaign '{name}' created and set as active using {self._current_format} format (rules: {rules_version}, mode: {interaction_mode}).")
         return campaign
 
@@ -580,6 +588,9 @@ class DnDStorage:
         # Load fact graph (split campaigns only)
         self._load_fact_graph()
 
+        # Load timeline tracker (split campaigns only)
+        self._load_timeline_tracker()
+
         logger.info(f"✅ Successfully loaded campaign '{name}' using {storage_format} format (rules: {self._rules_version}).")
         return self._current_campaign
 
@@ -639,6 +650,7 @@ class DnDStorage:
             self._fact_db = None
             self._npc_knowledge_tracker = None
             self._party_knowledge = None
+            self._timeline_tracker = None
             if hasattr(self, '_split_backend'):
                 self._split_backend._current_campaign = None
             logger.info(f"🧹 Cleared active campaign state (was: '{name}')")
@@ -1465,6 +1477,46 @@ class DnDStorage:
             self._fact_db = None
             self._npc_knowledge_tracker = None
             self._party_knowledge = None
+
+    # ------------------------------------------------------------------
+    # Timeline Tracker Management
+    # ------------------------------------------------------------------
+
+    @property
+    def timeline_tracker(self):
+        """Get the TimelineTracker for the current campaign.
+
+        Returns:
+            TimelineTracker instance if a split campaign is loaded and the
+            timeline loaded successfully, None otherwise.
+        """
+        return self._timeline_tracker
+
+    def _load_timeline_tracker(self) -> None:
+        """Load or initialize the timeline tracker for the current campaign.
+
+        Only applicable to split storage campaigns. On failure the accessor
+        degrades to None — timeline problems must never break the primary
+        journal/entity write path.
+        """
+        self._timeline_tracker = None
+
+        if self._current_format != StorageFormat.SPLIT or not self._current_campaign:
+            return
+
+        campaign_dir = self._split_backend._get_campaign_dir(self._current_campaign.name)
+        try:
+            from .claudmaster.consistency.timeline import TimelineTracker
+
+            self._timeline_tracker = TimelineTracker(campaign_dir)
+            logger.info(
+                f"Loaded timeline for campaign '{self._current_campaign.name}' "
+                f"({self._timeline_tracker.event_count} events, "
+                f"{'anchored' if self._timeline_tracker.anchored else 'unanchored'})"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to load timeline tracker: {e}")
+            self._timeline_tracker = None
 
     def _save_discovery_state(self) -> None:
         """Save the discovery state for the current campaign.
