@@ -751,3 +751,47 @@ class TestDataClasses:
         assert len(recap.key_events) == 2
         assert len(recap.unresolved_threads) == 1
         assert recap.current_situation == "Party in dungeon"
+
+
+class TestVerbatimEvents:
+    """Tests for verbatim journal events carried on the recap (DM2-8)."""
+
+    def _event(self, title, importance, timestamp):
+        from dm20_protocol.models import AdventureEvent, EventType
+
+        return AdventureEvent(
+            event_type=EventType.EXPLORATION,
+            title=title,
+            description=f"{title} description",
+            timestamp=timestamp,
+            session_number=1,
+            importance=importance,
+        )
+
+    def test_verbatim_events_default_empty(self, tmp_path):
+        """Recap without injected events has an empty verbatim list."""
+        fact_db = FactDatabase(tmp_path / "campaign")
+        generator = SessionRecapGenerator(fact_db)
+
+        recap = generator.generate_recap(session_number=1)
+
+        assert recap.verbatim_events == []
+
+    def test_injected_events_sorted_importance_desc_then_timestamp(self, tmp_path):
+        """Injected events land on the recap, importance desc, timestamp asc."""
+        fact_db = FactDatabase(tmp_path / "campaign")
+        generator = SessionRecapGenerator(fact_db)
+
+        events = [
+            self._event("minor", 2, datetime(2026, 1, 1, 10, 0)),
+            self._event("major-late", 5, datetime(2026, 1, 1, 12, 0)),
+            self._event("major-early", 5, datetime(2026, 1, 1, 11, 0)),
+        ]
+
+        recap = generator.generate_recap(session_number=1, events=events)
+
+        assert [e.title for e in recap.verbatim_events] == [
+            "major-early",
+            "major-late",
+            "minor",
+        ]
