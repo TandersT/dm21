@@ -455,6 +455,8 @@ class DnDStorage:
         """
         logger.debug("📂 Attempting to load adventure events...")
         self._events = []
+        if self._current_format == StorageFormat.SPLIT and self._current_campaign:
+            self._migrate_legacy_events()
         events_file = self._get_events_file()
         if not events_file.exists():
             logger.debug("❌ Adventure log file does not exist. No events loaded.")
@@ -467,6 +469,59 @@ class DnDStorage:
             logger.info(f"✅ Successfully loaded {len(self._events)} events.")
         except (json.JSONDecodeError, ValueError) as e:
             logger.error(f"❌ Error loading events: {e}")
+
+    def _migrate_legacy_events(self) -> None:
+        """One-shot migration of the legacy global adventure log (DM2-14).
+
+        With exactly one campaign in the data directory, attribution is
+        unambiguous: stamp the legacy events with the campaign name, merge
+        them into the campaign's own log (skipping ids already present), and
+        vacate the legacy path by renaming the file (data stays recoverable).
+        With multiple campaigns the events cannot be attributed — leave the
+        file alone and warn.
+
+        Failures are logged and swallowed: migration problems must never
+        break campaign loading.
+        """
+        legacy_file = self._get_legacy_events_file()
+        if not legacy_file.exists() or not self._current_campaign:
+            return
+
+        try:
+            campaigns = self.list_campaigns()
+            if campaigns != [self._current_campaign.name]:
+                logger.warning(
+                    f"⚠️ Legacy global adventure log at {legacy_file} left unmigrated: "
+                    f"{len(campaigns)} campaigns exist, so its events cannot be attributed. "
+                    "They are excluded from campaign views; attribute them manually if needed."
+                )
+                return
+
+            with open(legacy_file, 'r', encoding='utf-8') as f:
+                legacy_events = [AdventureEvent.model_validate(e) for e in json.load(f)]
+            for event in legacy_events:
+                if event.campaign is None:
+                    event.campaign = self._current_campaign.name
+
+            events_file = self._get_events_file()
+            existing: list[AdventureEvent] = []
+            if events_file.exists():
+                with open(events_file, 'r', encoding='utf-8') as f:
+                    existing = [AdventureEvent.model_validate(e) for e in json.load(f)]
+            known_ids = {e.id for e in existing}
+            merged = existing + [e for e in legacy_events if e.id not in known_ids]
+
+            events_data = [event.model_dump(mode='json') for event in merged]
+            with open(events_file, 'w', encoding='utf-8') as f:
+                json.dump(events_data, f, default=str)
+
+            legacy_file.rename(legacy_file.parent / (legacy_file.name + ".migrated"))
+            logger.info(
+                f"✅ Migrated {len(legacy_events)} legacy events to campaign "
+                f"'{self._current_campaign.name}' ({events_file})."
+            )
+        except Exception as e:
+            logger.warning(f"Legacy adventure log migration failed (load unaffected): {e}")
 
     # Campaign Management
     def create_campaign(self, name: str, description: str, dm_name: str | None = None, setting: str | Path | None = None, rules_version: str = "2024", interaction_mode: str = "classic") -> Campaign:
