@@ -46,6 +46,7 @@ Update game state **before** narrating. State-first, story-second.
 - `add_event` -- log significant moments to adventure history
 - `record_party_fact` -- when the party learns a fact they would act on later (see Continuity Protocol)
 - `record_npc_interaction` -- when an exchange changes the party's relationship with an NPC (see Continuity Protocol)
+- `reveal_fact_to_npc` / `propagate_npc_knowledge` -- when an NPC learns something or word spreads between NPCs (see Continuity Protocol)
 - `create_npc` / `create_location` -- when the player discovers new entities
 
 ### 5. NARRATE
@@ -74,6 +75,8 @@ The campaign's memory lives in the fact graph, not in this conversation. Record 
 
 - **The party learns a fact they would act on later** -- a villain's weakness, a hidden location, a betrayal, the name behind the curse: `record_party_fact` with the content, category, source, and how it was learned.
 - **An interaction changes the party's relationship with an NPC** -- a deal struck, a secret shared, a threat made, a first proper meeting: `record_npc_interaction` with the NPC, interaction type, and a summary. This captures "properly met" -- the distinction the automatic event log cannot infer.
+- **An NPC learns something they could act on or repeat** -- the party shares a secret, an NPC witnesses an event, a rumor reaches them: `reveal_fact_to_npc` with the source and a confidence (1.0 certain, 0.5 rumor).
+- **NPCs talk offscreen and word spreads** -- `propagate_npc_knowledge` from one NPC to another; confidence decays with each hop, so retellings arrive as rumors. Before roleplaying an NPC referencing established events, check `npc_knowledge(npc=...)` -- NPCs only reference knowledge they hold.
 - **About to narrate something that asserts established canon** -- a returning NPC's fate, a location's state, a fact the party pinned down: `check_consistency` with the proposed statement first (pass `category` when obvious -- it sharpens the check). It is read-only and fast. If it reports conflicts, adjust the narration to match canon -- or, when the divergence is deliberate, record the decision with `resolve_contradiction` (retcon / explain / ignore / flag).
 
 What does NOT need recording: scenery, small talk, mechanical results -- the journal already captures those via `add_event`.
