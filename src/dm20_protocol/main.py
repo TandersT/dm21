@@ -1449,9 +1449,30 @@ def create_npc(
     )
     return f"Created NPC '{npc.name}'"
 
+def _npc_continuity_block(npc: NPC) -> str | None:
+    """Build the party-continuity line for an NPC from the knowledge tracker.
+
+    Returns None when the tracker is unavailable (the block is omitted
+    entirely); "Not yet met" when the tracker has no interactions recorded.
+    """
+    tracker = storage.npc_knowledge_tracker
+    if tracker is None:
+        return None
+
+    interactions = tracker.get_interactions(npc.id)
+    if not interactions:
+        return "**Continuity:** Not yet met"
+
+    sessions = [i.session_number for i in interactions]
+    return (
+        f"**Continuity:** First met: Session {min(sessions)} / "
+        f"Last seen: Session {max(sessions)} / Interactions: {len(interactions)}"
+    )
+
+
 @mcp.tool
 def get_npc(
-    name_or_id: Annotated[str, Field(description="NPC name or ID")],
+    name_or_id: Annotated[str, Field(description="NPC name (exact, case-sensitive match)")],
     player_id: Annotated[str | None, Field(description="Caller's player ID for output filtering. When provided, DM-only fields (bio, notes, stats, relationships) are stripped for non-DM callers.")] = None,
 ) -> str:
     """Get NPC information."""
@@ -1461,6 +1482,11 @@ def get_npc(
 
     # Use OutputFilter when player_id is provided
     result = output_filter.filter_npc_response(npc, player_id=player_id)
+
+    # Continuity (met-state) is appended after filtering for all callers.
+    continuity = _npc_continuity_block(npc)
+    if continuity:
+        return f"{result.content}\n{continuity}\n"
     return result.content
 
 @mcp.tool
@@ -2758,18 +2784,33 @@ Generate a structured SessionNote with the following fields:
 Please analyze all chunks above and generate a single cohesive SessionNote object following the structure described. Use the campaign context to identify known characters, NPCs, locations, and quests. Remember to deduplicate events that appear in multiple chunks."""
 
 @mcp.tool
-def get_sessions() -> str:
+def get_sessions(
+    detail: Annotated[Literal["summary", "full"], Field(description="'summary' (default): one-line entry per session. 'full': the latest session is expanded with its untruncated summary and structured fields (events, NPCs encountered, quest updates); older sessions stay one-line.")] = "summary",
+) -> str:
     """Get all session notes."""
     sessions = storage.get_sessions()
     if not sessions:
         return "No session notes recorded."
 
+    latest_number = max(s.session_number for s in sessions)
     session_list = []
     for session in sorted(sessions, key=lambda s: s.session_number):
         title = session.title or "No title"
         date = session.date.strftime("%Y-%m-%d")
         session_list.append(f"**Session {session.session_number}** ({date}): {title}")
-        session_list.append(f"  {session.summary[:100]}{'...' if len(session.summary) > 100 else ''}")
+
+        if detail == "full" and session.session_number == latest_number:
+            session_list.append(f"  {session.summary}")
+            if session.events:
+                session_list.append("  **Events:**")
+                session_list.extend(f"  - {event}" for event in session.events)
+            if session.npcs_encountered:
+                session_list.append(f"  **NPCs encountered:** {', '.join(session.npcs_encountered)}")
+            if session.quest_updates:
+                session_list.append("  **Quest updates:**")
+                session_list.extend(f"  - {quest}: {progress}" for quest, progress in session.quest_updates.items())
+        else:
+            session_list.append(f"  {session.summary[:100]}{'...' if len(session.summary) > 100 else ''}")
         session_list.append("")
 
     return "**Session Notes:**\n\n" + "\n".join(session_list)
@@ -2816,12 +2857,15 @@ def get_events(
     limit: Annotated[int | None, Field(description="Maximum number of events to return", ge=1)] = None,
     event_type: Annotated[Literal["combat", "roleplay", "exploration", "quest", "character", "world", "session"] | None, Field(description="Filter by event type")] = None,
     search: Annotated[str | None, Field(description="Search events by title/description")] = None,
+    session_number: Annotated[int | None, Field(description="Return only events from this session", ge=1)] = None,
 ) -> str:
     """Get events from the adventure log."""
     if search:
         events = storage.search_events(search)
+        if session_number is not None:
+            events = [e for e in events if e.session_number == session_number]
     else:
-        events = storage.get_events(limit=limit, event_type=event_type)
+        events = storage.get_events(limit=limit, event_type=event_type, session_number=session_number)
 
     if not events:
         return "No events found."
