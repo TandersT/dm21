@@ -17,6 +17,12 @@ from fastmcp import FastMCP
 from pydantic import Field
 
 from .storage import DnDStorage
+from .claudmaster.consistency.timeline import (
+    TimelineEvent,
+    TimeUnit,
+    day_number_to_game_time,
+    format_day_relative,
+)
 from .models import (
     Character, NPC, Location, Quest, SessionNote, AdventureEvent, EventType,
     AbilityScore, CharacterClass, Race, Item, Spell
@@ -1419,6 +1425,52 @@ def _ingest_to_fact_graph(ingest_fn) -> None:
         logger.warning(f"Fact graph ingestion failed (primary write unaffected): {e}")
 
 
+def _stamp_timeline(event: AdventureEvent) -> str:
+    """Best-effort timeline stamp for a journal write.
+
+    The journal write has already succeeded when this runs; timeline failures
+    are logged and swallowed so they never break the primary write. The stamp
+    carries the tracker's current_time at write time — the engine, not the
+    LLM, supplies the GameTime (DM2-6 date-model spike).
+
+    Returns:
+        Suffix for the tool response ("" when the timeline is unavailable).
+    """
+    try:
+        tracker = storage.timeline_tracker
+        if tracker is None:
+            return ""
+        if not tracker.anchored:
+            return (
+                "\n⏳ Not stamped on the timeline — the clock is unanchored. "
+                "Anchor it with set_game_time first."
+            )
+
+        timeline_event = TimelineEvent(
+            id=f"tl_{event.id}",
+            game_time=tracker.get_current_time(),
+            real_session=event.session_number or _current_session_number(),
+            description=event.description,
+            location=event.location,
+            characters_involved=list(event.characters_involved),
+            fact_ids=[f"evt_{event.id}"],
+        )
+        is_valid, error = tracker.validate_temporal_order(timeline_event)
+        tracker.add_event(timeline_event)
+        tracker.save()
+
+        suffix = f"\n🕐 Timeline: {format_day_relative(timeline_event.game_time)}"
+        if not is_valid:
+            suffix += (
+                f"\n⚠️ Temporal conflict: {error}. If time has passed since the "
+                "last event, advance the clock with advance_game_time."
+            )
+        return suffix
+    except Exception as e:
+        logger.warning(f"Timeline stamping failed (primary write unaffected): {e}")
+        return ""
+
+
 # NPC Management Tools
 @mcp.tool
 def create_npc(
@@ -1715,7 +1767,14 @@ def update_game_state(
         kwargs["notes"] = notes
 
     storage.update_game_state(**kwargs)
-    return "Updated game state"
+    response = "Updated game state"
+    if current_date_in_game is not None and storage.timeline_tracker is not None:
+        response += (
+            "\nNote: the timeline clock did not advance — the in-game date prose "
+            "is display-only. Use advance_game_time or set_game_time to move "
+            "structured time."
+        )
+    return response
 
 @mcp.tool
 def get_game_state() -> str:
@@ -1744,11 +1803,20 @@ def get_game_state() -> str:
 {chr(10).join(init_lines)}
 **Current Turn:** {game_state.current_turn or 'None'}"""
 
+    timeline_line = ""
+    tracker = storage.timeline_tracker
+    if tracker is not None:
+        anchored_text = "anchored" if tracker.anchored else "not anchored"
+        timeline_line = (
+            f"\n**Timeline Clock:** "
+            f"{format_day_relative(tracker.get_current_time())} ({anchored_text})"
+        )
+
     state_info = f"""**Game State**
 **Campaign:** {game_state.campaign_name}
 **Session:** {game_state.current_session}
 **Location:** {game_state.current_location or 'Unknown'}
-**Date (In-Game):** {game_state.current_date_in_game or 'Unknown'}
+**Date (In-Game):** {game_state.current_date_in_game or 'Unknown'}{timeline_line}
 **Party Level:** {game_state.party_level}
 **Party Funds:** {game_state.party_funds}
 **In Combat:** {'Yes' if game_state.in_combat else 'No'}
@@ -1760,6 +1828,133 @@ def get_game_state() -> str:
 """
 
     return state_info
+
+_TIMELINE_UNAVAILABLE = (
+    "Timeline unavailable: the timeline tracker could not be loaded "
+    "for this campaign (split-format campaigns only)."
+)
+
+
+@mcp.tool
+def set_game_time(
+    day: Annotated[int, Field(description="Campaign day number (Day 1 = campaign start); the engine maps it onto the calendar — do not convert to months/years yourself", ge=1)],
+    hour: Annotated[int, Field(description="Hour of day (0-23)", ge=0, le=23)] = 8,
+    minute: Annotated[int, Field(description="Minute (0-59)", ge=0, le=59)] = 0,
+    date_display: Annotated[str | None, Field(description="Narrative date for display (e.g. 'Dawn — first morning in Barovia'); derived from the structured time if omitted")] = None,
+) -> str:
+    """Set the campaign timeline clock to a specific day and time. Anchors the timeline."""
+    if not storage.get_current_campaign():
+        return "No active campaign. Load or create a campaign first."
+
+    tracker = storage.timeline_tracker
+    if tracker is None:
+        return _TIMELINE_UNAVAILABLE
+
+    new_time = day_number_to_game_time(day, hour=hour, minute=minute)
+    rewind_warning = ""
+    if any(e.game_time > new_time for e in tracker.events):
+        rewind_warning = (
+            "\n⚠️ The clock moved backward past already-stamped events — new "
+            "stamps will interleave before them. If time has simply passed, "
+            "use advance_game_time instead."
+        )
+    tracker.set_time(new_time)
+    tracker.anchored = True
+    tracker.save()
+
+    display = date_display or format_day_relative(new_time)
+    storage.update_game_state(current_date_in_game=display)
+    return (
+        f"Timeline clock set to {format_day_relative(new_time)}. "
+        f"In-game date display: '{display}'" + rewind_warning
+    )
+
+
+@mcp.tool
+def advance_game_time(
+    amount: Annotated[int, Field(description="How much time passes", ge=1)],
+    unit: Annotated[Literal["round", "minute", "hour", "day", "week", "month"], Field(description="Time unit")],
+    date_display: Annotated[str | None, Field(description="Narrative date for display; derived from the new structured time if omitted")] = None,
+) -> str:
+    """Advance the campaign timeline clock (travel, rests, scene transitions)."""
+    if not storage.get_current_campaign():
+        return "No active campaign. Load or create a campaign first."
+
+    tracker = storage.timeline_tracker
+    if tracker is None:
+        return _TIMELINE_UNAVAILABLE
+    if not tracker.anchored:
+        return (
+            "Timeline clock is not anchored yet — anchor it first with set_game_time "
+            "(e.g. set_game_time(day=2, hour=6) for 'Day 2, dawn')."
+        )
+
+    old_time = tracker.get_current_time()
+    new_time = tracker.advance_time(amount, TimeUnit(unit))
+    tracker.save()
+
+    display = date_display or format_day_relative(new_time)
+    storage.update_game_state(current_date_in_game=display)
+    return (
+        f"Timeline clock advanced: {format_day_relative(old_time)} → "
+        f"{format_day_relative(new_time)}. In-game date display: '{display}'"
+    )
+
+
+@mcp.tool
+def get_timeline(
+    from_day: Annotated[int | None, Field(description="Start of a day range to query (campaign day number)", ge=1)] = None,
+    to_day: Annotated[int | None, Field(description="End of the day range (defaults to from_day, i.e. a single day)", ge=1)] = None,
+    limit: Annotated[int, Field(description="Max recent events to show when no range is given", ge=1)] = 10,
+) -> str:
+    """Show the campaign timeline clock and query events at or between game days."""
+    if not storage.get_current_campaign():
+        return "No active campaign. Load or create a campaign first."
+
+    tracker = storage.timeline_tracker
+    if tracker is None:
+        return _TIMELINE_UNAVAILABLE
+
+    current = tracker.get_current_time()
+    anchored_text = (
+        "anchored"
+        if tracker.anchored
+        else "NOT anchored — anchor with set_game_time before logging events"
+    )
+    lines = [
+        "**Campaign Timeline**",
+        f"**Clock:** {format_day_relative(current)} ({anchored_text})",
+        f"**Events recorded:** {tracker.event_count}",
+        "",
+    ]
+
+    if from_day is not None or to_day is not None:
+        start_day = from_day if from_day is not None else 1
+        end_day = to_day if to_day is not None else start_day
+        start = day_number_to_game_time(start_day, hour=0, minute=0)
+        end = day_number_to_game_time(end_day, hour=23, minute=59)
+        events = tracker.get_events_between(start, end)
+        lines.append(
+            f"**Events on Day {start_day}:**"
+            if end_day == start_day
+            else f"**Events from Day {start_day} to Day {end_day}:**"
+        )
+    else:
+        events = tracker.events[-limit:]
+        lines.append(f"**Most recent events (up to {limit}):**")
+
+    if not events:
+        lines.append("(none)")
+    for e in events:
+        location_text = f" — {e.location}" if e.location else ""
+        chars_text = f" [{', '.join(e.characters_involved)}]" if e.characters_involved else ""
+        lines.append(
+            f"- {format_day_relative(e.game_time)}: {e.description}"
+            f"{location_text}{chars_text} (session {e.real_session})"
+        )
+
+    return "\n".join(lines)
+
 
 def _prefetch_state_update() -> None:
     """Feed current game state to PrefetchEngine if active."""
@@ -2850,7 +3045,7 @@ def add_event(
             default_session=_current_session_number(),
         )
     )
-    return f"Added {event_type.lower()} event: '{resolved_title}'"
+    return f"Added {event_type.lower()} event: '{resolved_title}'" + _stamp_timeline(event)
 
 @mcp.tool
 def get_events(
