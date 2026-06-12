@@ -1,7 +1,7 @@
 ---
 description: Begin or resume a D&D game session. Load a campaign, set the scene, and start playing.
 argument-hint: [campaign_name]
-allowed-tools: Task, AskUserQuestion, Skill, mcp__dm20-protocol__check_for_updates, mcp__dm20-protocol__get_campaign_info, mcp__dm20-protocol__list_campaigns, mcp__dm20-protocol__load_campaign, mcp__dm20-protocol__create_campaign, mcp__dm20-protocol__list_characters, mcp__dm20-protocol__get_character, mcp__dm20-protocol__create_character, mcp__dm20-protocol__update_character, mcp__dm20-protocol__import_from_dndbeyond, mcp__dm20-protocol__get_game_state, mcp__dm20-protocol__get_claudmaster_session_state, mcp__dm20-protocol__start_claudmaster_session, mcp__dm20-protocol__get_sessions, mcp__dm20-protocol__get_location, mcp__dm20-protocol__list_quests, mcp__dm20-protocol__configure_claudmaster, mcp__dm20-protocol__update_game_state, mcp__dm20-protocol__discover_adventures, mcp__dm20-protocol__load_adventure, mcp__dm20-protocol__load_rulebook, mcp__dm20-protocol__start_party_mode, mcp__dm20-protocol__get_class_info, mcp__dm20-protocol__get_race_info, mcp__dm20-protocol__roll_dice, mcp__dm20-protocol__search_rules, mcp__dm20-protocol__add_spell, mcp__dm20-protocol__get_spell_info, mcp__dm20-protocol__get_session_recap, mcp__dm20-protocol__party_knowledge, mcp__dm20-protocol__sync_facts, mcp__dm20-protocol__get_events
+allowed-tools: Task, AskUserQuestion, Skill, mcp__dm20-protocol__check_for_updates, mcp__dm20-protocol__get_campaign_info, mcp__dm20-protocol__list_campaigns, mcp__dm20-protocol__load_campaign, mcp__dm20-protocol__create_campaign, mcp__dm20-protocol__list_characters, mcp__dm20-protocol__get_character, mcp__dm20-protocol__create_character, mcp__dm20-protocol__update_character, mcp__dm20-protocol__import_from_dndbeyond, mcp__dm20-protocol__get_game_state, mcp__dm20-protocol__get_claudmaster_session_state, mcp__dm20-protocol__start_claudmaster_session, mcp__dm20-protocol__get_sessions, mcp__dm20-protocol__get_location, mcp__dm20-protocol__list_quests, mcp__dm20-protocol__configure_claudmaster, mcp__dm20-protocol__update_game_state, mcp__dm20-protocol__discover_adventures, mcp__dm20-protocol__load_adventure, mcp__dm20-protocol__load_rulebook, mcp__dm20-protocol__start_party_mode, mcp__dm20-protocol__get_class_info, mcp__dm20-protocol__get_race_info, mcp__dm20-protocol__roll_dice, mcp__dm20-protocol__search_rules, mcp__dm20-protocol__add_spell, mcp__dm20-protocol__get_spell_info, mcp__dm20-protocol__get_session_recap, mcp__dm20-protocol__party_knowledge, mcp__dm20-protocol__sync_facts, mcp__dm20-protocol__get_events, mcp__dm20-protocol__set_game_time, mcp__dm20-protocol__get_timeline
 ---
 
 # DM Start
@@ -345,10 +345,15 @@ Check if there's a paused session to resume:
 2. `party_knowledge()` — everything the party has learned so far; these facts are established canon
 3. **If the recap or party knowledge come back empty but session notes exist** (the campaign has history the fact graph hasn't ingested yet): call `sync_facts()` once, then retry `get_session_recap()`
 4. **If the recap is still unavailable** (e.g., the fact graph can't load): reconstruct it from `get_sessions(detail="full")` + `get_events(session_number=<last session>)`
-5. `get_location` for the current location details
-6. `get_character(name_or_id=<character_name>)` for each PC — check HP, conditions, inventory
-7. Deliver a "Previously..." recap woven into narrative (not a bullet list). Established details from the recap — names, places, exact wording — are canon; never contradict them.
-8. Re-establish the scene where they left off
+5. **Anchor the timeline clock (one-time, before any event writes):** `get_game_state` includes a `Timeline Clock` line. If it says **not anchored**:
+   - If the in-game date matches "Day N" prose (e.g. "Day 2, early morning"), call `set_game_time(day=N)`, adding `hour` if the prose implies a time of day (dawn ≈ 6, morning ≈ 9, midday ≈ 12, evening ≈ 18, night ≈ 22).
+   - Otherwise estimate the campaign day from the recap/session notes, or ask the player, then call `set_game_time`.
+   - If there is no in-game date at all, call `set_game_time(day=1)`.
+   - If already anchored (or the clock line is absent), skip this step. Never call `add_event` before the clock is anchored — unanchored writes are not stamped on the timeline.
+6. `get_location` for the current location details
+7. `get_character(name_or_id=<character_name>)` for each PC — check HP, conditions, inventory
+8. Deliver a "Previously..." recap woven into narrative (not a bullet list). Established details from the recap — names, places, exact wording — are canon; never contradict them.
+9. Re-establish the scene where they left off
 
 **If new session (no previous sessions):**
 1. `start_claudmaster_session(campaign_name="...")` to initialize

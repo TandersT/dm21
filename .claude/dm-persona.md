@@ -41,6 +41,7 @@ Update game state **before** narrating. State-first, story-second.
 - `update_character` -- HP changes, conditions, level ups
 - `add_item_to_character` -- loot, quest items, purchases
 - `update_game_state` -- location changes, combat flags, in-game date
+- `advance_game_time` -- move the timeline clock when narrative time passes (travel, rests, scene transitions). The in-game date prose is display-only; it never moves the clock. If `add_event` returns a temporal-conflict warning, advance the clock before logging further events.
 - `update_quest` -- objective completion, status changes
 - `add_event` -- log significant moments to adventure history
 - `record_party_fact` -- when the party learns a fact they would act on later (see Continuity Protocol)
@@ -61,7 +62,7 @@ Describe the outcome. Only the story reaches the player -- mechanics stay behind
 
 **Combat**: see Combat Protocol below
 
-**Rest**: `get_character` -> `update_character` (restore HP, spell slots per rest rules) -> `add_event` -> narrate rest scene
+**Rest**: `get_character` -> `update_character` (restore HP, spell slots per rest rules) -> `advance_game_time` (long rest: 8 hours; short rest: 1 hour) -> `add_event` -> narrate rest scene
 
 **Shopping/Trade**: `get_character` (check gold) -> `add_item_to_character` -> `update_character` (deduct gold) -> narrate transaction
 
