@@ -260,3 +260,52 @@ class TestGameStateClock:
         storage._timeline_tracker = None
         result = m.get_game_state.fn()
         assert "Timeline Clock:" not in result
+
+
+# ── code-review hardening ───────────────────────────────────────────
+
+
+class TestClockRewindWarning:
+    def test_set_backward_past_stamped_events_warns(self, m, storage):
+        m.set_game_time.fn(day=3)
+        m.add_event.fn(event_type="world", description="Day three happening")
+        result = m.set_game_time.fn(day=1)
+        assert "backward" in result.lower()
+        # Warn, don't block — the clock still moves
+        assert storage.timeline_tracker.get_current_time().day == 1
+
+    def test_forward_set_does_not_warn(self, m, storage):
+        m.set_game_time.fn(day=1)
+        m.add_event.fn(event_type="world", description="Day one happening")
+        result = m.set_game_time.fn(day=2)
+        assert "backward" not in result.lower()
+
+
+class TestStampingNeverBreaksPrimaryWrite:
+    def test_add_event_survives_timeline_save_failure(self, m, storage, monkeypatch):
+        def boom(*args, **kwargs):
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(storage.timeline_tracker, "save", boom)
+        result = m.add_event.fn(event_type="world", description="Still logged.")
+        assert "Added world event" in result
+        assert len(storage.get_events()) == 1
+
+
+class TestGetTimelineRangeDefaults:
+    def test_to_day_only_queries_from_day_one(self, m, storage):
+        m.set_game_time.fn(day=1)
+        m.add_event.fn(event_type="world", description="Day one happening")
+        m.set_game_time.fn(day=5)
+        m.add_event.fn(event_type="world", description="Day five happening")
+        result = m.get_timeline.fn(to_day=2)
+        assert "Day one happening" in result
+        assert "Day five happening" not in result
+
+    def test_limit_truncates_recent_events(self, m, storage):
+        for description in ["first happening", "second happening", "third happening"]:
+            m.add_event.fn(event_type="world", description=description)
+        result = m.get_timeline.fn(limit=2)
+        assert "third happening" in result
+        assert "second happening" in result
+        assert "first happening" not in result

@@ -1848,6 +1848,13 @@ def set_game_time(
         return _TIMELINE_UNAVAILABLE
 
     new_time = day_number_to_game_time(day, hour=hour, minute=minute)
+    rewind_warning = ""
+    if any(e.game_time > new_time for e in tracker.events):
+        rewind_warning = (
+            "\n⚠️ The clock moved backward past already-stamped events — new "
+            "stamps will interleave before them. If time has simply passed, "
+            "use advance_game_time instead."
+        )
     tracker.set_time(new_time)
     tracker.anchored = True
     tracker.save()
@@ -1856,7 +1863,7 @@ def set_game_time(
     storage.update_game_state(current_date_in_game=display)
     return (
         f"Timeline clock set to {format_day_relative(new_time)}. "
-        f"In-game date display: '{display}'"
+        f"In-game date display: '{display}'" + rewind_warning
     )
 
 
@@ -1912,15 +1919,16 @@ def get_timeline(
         "",
     ]
 
-    if from_day is not None:
-        end_day = to_day if to_day is not None else from_day
-        start = day_number_to_game_time(from_day, hour=0, minute=0)
+    if from_day is not None or to_day is not None:
+        start_day = from_day if from_day is not None else 1
+        end_day = to_day if to_day is not None else start_day
+        start = day_number_to_game_time(start_day, hour=0, minute=0)
         end = day_number_to_game_time(end_day, hour=23, minute=59)
         events = tracker.get_events_between(start, end)
         lines.append(
-            f"**Events on Day {from_day}:**"
-            if end_day == from_day
-            else f"**Events from Day {from_day} to Day {end_day}:**"
+            f"**Events on Day {start_day}:**"
+            if end_day == start_day
+            else f"**Events from Day {start_day} to Day {end_day}:**"
         )
     else:
         events = tracker.events[-limit:]

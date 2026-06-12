@@ -348,6 +348,7 @@ Check if there's a paused session to resume:
 5. **Anchor the timeline clock (one-time, before any event writes):** `get_game_state` includes a `Timeline Clock` line. If it says **not anchored**:
    - If the in-game date matches "Day N" prose (e.g. "Day 2, early morning"), call `set_game_time(day=N)`, adding `hour` if the prose implies a time of day (dawn ≈ 6, morning ≈ 9, midday ≈ 12, evening ≈ 18, night ≈ 22).
    - Otherwise estimate the campaign day from the recap/session notes, or ask the player, then call `set_game_time`.
+   - When anchoring from an existing in-game date, pass that prose as `date_display` (e.g. `set_game_time(day=2, hour=6, date_display="Dawn — first morning in Barovia")`) so the narrative wording is preserved — otherwise the display is replaced with derived text like "Day 2, dawn (06:00)".
    - If there is no in-game date at all, call `set_game_time(day=1)`.
    - If already anchored (or the clock line is absent), skip this step. Never call `add_event` before the clock is anchored — unanchored writes are not stamped on the timeline.
 6. `get_location` for the current location details
