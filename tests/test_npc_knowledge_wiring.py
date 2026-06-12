@@ -170,3 +170,115 @@ class TestRevealFactToNpc:
         storage._current_campaign = None
         result = m.reveal_fact_to_npc.fn(npc="Barkeep", fact="x")
         assert "No active campaign" in result
+
+
+# ── propagate_npc_knowledge ─────────────────────────────────────────
+
+
+class TestPropagateNpcKnowledge:
+    def _setup_two_npcs(self, m, storage):
+        m.create_npc.fn(name="Innkeeper")
+        m.create_npc.fn(name="Captain")
+        m.reveal_fact_to_npc.fn(
+            npc="Innkeeper", fact="The mill burned down", source="witnessed"
+        )
+        return storage.get_npc("Innkeeper"), storage.get_npc("Captain")
+
+    def test_propagates_with_default_decay(self, m, storage):
+        innkeeper, captain = self._setup_two_npcs(m, storage)
+        result = m.propagate_npc_knowledge.fn(from_npc="Innkeeper", to_npc="Captain")
+        assert "✅" in result
+
+        entries = storage.npc_knowledge_tracker.get_npc_knowledge(captain.id)
+        assert len(entries) == 1
+        assert entries[0].confidence == pytest.approx(0.75)
+        assert entries[0].source.value == "told_by_npc"
+        assert entries[0].source_entity == innkeeper.id
+
+    def test_custom_decay(self, m, storage):
+        _, captain = self._setup_two_npcs(m, storage)
+        m.propagate_npc_knowledge.fn(from_npc="Innkeeper", to_npc="Captain", decay=0.5)
+        entries = storage.npc_knowledge_tracker.get_npc_knowledge(captain.id)
+        assert entries[0].confidence == pytest.approx(0.5)
+
+    def test_two_hops_compound_decay(self, m, storage):
+        self._setup_two_npcs(m, storage)
+        m.create_npc.fn(name="Guard")
+        m.propagate_npc_knowledge.fn(from_npc="Innkeeper", to_npc="Captain")
+        m.propagate_npc_knowledge.fn(from_npc="Captain", to_npc="Guard")
+        guard = storage.get_npc("Guard")
+        entries = storage.npc_knowledge_tracker.get_npc_knowledge(guard.id)
+        assert entries[0].confidence == pytest.approx(0.5625)
+
+    def test_explicit_fact_by_content(self, m, storage):
+        self._setup_two_npcs(m, storage)
+        m.reveal_fact_to_npc.fn(
+            npc="Innkeeper", fact="The baron is broke", source="profession"
+        )
+        m.propagate_npc_knowledge.fn(
+            from_npc="Innkeeper", to_npc="Captain", facts='["The baron is broke"]'
+        )
+        captain = storage.get_npc("Captain")
+        entries = storage.npc_knowledge_tracker.get_npc_knowledge(captain.id)
+        assert len(entries) == 1
+        assert entries[0].fact_id == _pfact_id("The baron is broke")
+
+    def test_receiver_already_knows_reported(self, m, storage):
+        self._setup_two_npcs(m, storage)
+        m.reveal_fact_to_npc.fn(
+            npc="Captain", fact="The mill burned down", source="witnessed"
+        )
+        result = m.propagate_npc_knowledge.fn(from_npc="Innkeeper", to_npc="Captain")
+        assert "already knows" in result
+
+        captain = storage.get_npc("Captain")
+        entries = storage.npc_knowledge_tracker.get_npc_knowledge(captain.id)
+        assert len(entries) == 1
+        assert entries[0].confidence == 1.0  # witnessed entry untouched
+
+    def test_unresolved_fact_reported(self, m, storage):
+        self._setup_two_npcs(m, storage)
+        result = m.propagate_npc_knowledge.fn(
+            from_npc="Innkeeper", to_npc="Captain", facts='["No such fact"]'
+        )
+        assert "No facts resolved" in result
+
+    def test_sender_without_knowledge(self, m, storage):
+        m.create_npc.fn(name="Innkeeper")
+        m.create_npc.fn(name="Captain")
+        result = m.propagate_npc_knowledge.fn(from_npc="Innkeeper", to_npc="Captain")
+        assert "no recorded knowledge" in result
+
+    def test_self_propagation_rejected(self, m, storage):
+        m.create_npc.fn(name="Innkeeper")
+        result = m.propagate_npc_knowledge.fn(from_npc="Innkeeper", to_npc="Innkeeper")
+        assert "themselves" in result
+
+    def test_unknown_npcs_rejected(self, m, storage):
+        m.create_npc.fn(name="Innkeeper")
+        assert "not found" in m.propagate_npc_knowledge.fn(
+            from_npc="Ghost", to_npc="Innkeeper"
+        )
+        assert "not found" in m.propagate_npc_knowledge.fn(
+            from_npc="Innkeeper", to_npc="Ghost"
+        )
+
+    def test_persists_to_disk(self, m, storage, tmp_path):
+        _, captain = self._setup_two_npcs(m, storage)
+        m.propagate_npc_knowledge.fn(from_npc="Innkeeper", to_npc="Captain")
+
+        fresh = DnDStorage(data_dir=tmp_path / "data")
+        fresh.load_campaign("NPC Knowledge Test")
+        assert len(fresh.npc_knowledge_tracker.get_npc_knowledge(captain.id)) == 1
+
+    def test_unavailable_without_fact_graph(self, m, storage):
+        m.create_npc.fn(name="Innkeeper")
+        m.create_npc.fn(name="Captain")
+        storage._fact_db = None
+        result = m.propagate_npc_knowledge.fn(from_npc="Innkeeper", to_npc="Captain")
+        assert "could not be loaded" in result
+
+    def test_requires_campaign(self, m, storage):
+        storage._current_campaign = None
+        result = m.propagate_npc_knowledge.fn(from_npc="A", to_npc="B")
+        assert "No active campaign" in result

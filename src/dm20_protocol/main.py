@@ -5216,6 +5216,116 @@ def reveal_fact_to_npc(
 
 
 @mcp.tool
+def propagate_npc_knowledge(
+    from_npc: Annotated[str, Field(description="NPC name or ID sharing the knowledge")],
+    to_npc: Annotated[str, Field(description="NPC name or ID receiving the knowledge")],
+    facts: Annotated[str | None, Field(description="Fact ids or fact content to pass on — JSON array or comma-separated. Omit to share everything the source NPC knows")] = None,
+    decay: Annotated[float | None, Field(description="Confidence multiplier per hop, 0–1 (defaults to 0.75: certain → secondhand → rumor)", gt=0.0, le=1.0)] = None,
+    session: Annotated[int | None, Field(description="Session number (defaults to the current session)", ge=1)] = None,
+) -> str:
+    """Propagate knowledge from one NPC to another with confidence decay.
+
+    Models NPCs talking offscreen: the receiver learns the facts at the
+    sender's confidence multiplied by the decay factor, so retellings arrive
+    as rumors. Only facts the sender actually knows propagate; facts the
+    receiver already knows are left untouched.
+    """
+    campaign = storage.get_current_campaign()
+    if not campaign:
+        return "No active campaign. Load or create a campaign first."
+
+    fact_db = storage.fact_db
+    tracker = storage.npc_knowledge_tracker
+    if fact_db is None or tracker is None:
+        return _NPC_KNOWLEDGE_UNAVAILABLE
+
+    from_obj = _resolve_npc(from_npc)
+    if from_obj is None:
+        return f"NPC '{from_npc}' not found. Create the NPC first with create_npc."
+    to_obj = _resolve_npc(to_npc)
+    if to_obj is None:
+        return f"NPC '{to_npc}' not found. Create the NPC first with create_npc."
+    if from_obj.id == to_obj.id:
+        return f"'{from_obj.name}' cannot propagate knowledge to themselves."
+
+    from .claudmaster.consistency.npc_knowledge import DEFAULT_PROPAGATION_DECAY
+
+    sender_known = {e.fact_id for e in tracker.get_npc_knowledge(from_obj.id)}
+    if not sender_known:
+        return f"'{from_obj.name}' has no recorded knowledge to share."
+
+    unresolved: list[str] = []
+    if facts is None:
+        fact_ids = sorted(sender_known)
+    else:
+        fact_ids = []
+        for ref in _parse_json_list(facts):
+            if ref in sender_known:
+                fact_ids.append(ref)
+                continue
+            resolved = _resolve_fact_id(ref)
+            if resolved is not None:
+                fact_ids.append(resolved)
+            else:
+                unresolved.append(ref)
+        fact_ids = list(dict.fromkeys(fact_ids))
+        if not fact_ids:
+            return (
+                "No facts resolved: "
+                + ", ".join(f"'{r}'" for r in unresolved)
+                + ". Pass fact ids or the exact fact content."
+            )
+
+    session_number = session or _current_session_number()
+    effective_decay = decay if decay is not None else DEFAULT_PROPAGATION_DECAY
+    receiver_known_before = {e.fact_id for e in tracker.get_npc_knowledge(to_obj.id)}
+
+    propagated = tracker.propagate_knowledge(
+        from_obj.id, to_obj.id, fact_ids, session_number, decay=effective_decay
+    )
+    if propagated:
+        tracker.save()
+
+    def _fact_line(fact_id: str) -> str:
+        fact = fact_db.get_fact(fact_id)
+        return fact.content if fact is not None else fact_id
+
+    receiver_entries = {e.fact_id: e for e in tracker.get_npc_knowledge(to_obj.id)}
+    lines = []
+    if propagated:
+        lines.append(
+            f"✅ '{from_obj.name}' passed {len(propagated)} fact(s) to '{to_obj.name}' "
+            f"(decay {effective_decay:g}, session {session_number}):"
+        )
+        for fact_id in propagated:
+            entry = receiver_entries[fact_id]
+            lines.append(
+                f"- {fact_id} (confidence {entry.confidence:.2f}): {_fact_line(fact_id)}"
+            )
+    else:
+        lines.append(
+            f"No knowledge propagated from '{from_obj.name}' to '{to_obj.name}'."
+        )
+
+    already_known = [f for f in fact_ids if f in receiver_known_before]
+    not_known = [f for f in fact_ids if f not in sender_known]
+    if already_known:
+        lines.append(
+            f"Skipped — '{to_obj.name}' already knows: " + ", ".join(already_known)
+        )
+    if not_known:
+        lines.append(
+            f"Skipped — '{from_obj.name}' doesn't know: " + ", ".join(not_known)
+        )
+    if unresolved:
+        lines.append(
+            "Skipped — not found in the fact graph: "
+            + ", ".join(f"'{r}'" for r in unresolved)
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool
 def sync_facts() -> str:
     """Backfill the fact graph from the existing journal and campaign entities.
 
