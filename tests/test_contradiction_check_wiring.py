@@ -59,3 +59,46 @@ class TestDetectorLifecycle:
 
     def test_detector_shares_live_fact_db_instance(self, storage):
         assert storage.contradiction_detector._fact_db is storage.fact_db
+
+
+# ── check_consistency ───────────────────────────────────────────────
+
+
+class TestCheckConsistency:
+    def test_reports_conflict_with_severity_fact_and_suggestions(self, m, storage):
+        _seed_fact(storage)
+        result = m.check_consistency.fn(statement=STATEMENT, category="npc")
+        assert "ctr_" in result
+        assert "major" in result
+        assert "character" in result
+        assert "Father Donavich is alive and hiding in the church" in result
+        assert "flag_for_dm" in result
+        assert "resolve_contradiction" in result
+
+    def test_clean_statement_reports_no_conflicts(self, m, storage):
+        _seed_fact(storage)
+        result = m.check_consistency.fn(
+            statement="The party shares a quiet meal at the tavern"
+        )
+        assert "No conflicts" in result
+
+    def test_check_writes_nothing_to_disk(self, m, storage):
+        _seed_fact(storage)
+        detector = storage.contradiction_detector
+        m.check_consistency.fn(statement=STATEMENT)
+        assert not detector._contradictions_path.exists()
+        assert detector.get_all_contradictions() == []
+
+    def test_invalid_category_lists_valid_values(self, m, storage):
+        result = m.check_consistency.fn(statement=STATEMENT, category="bogus")
+        assert "Invalid category" in result
+        assert "npc" in result
+
+    def test_empty_statement_rejected(self, m, storage):
+        result = m.check_consistency.fn(statement="   ")
+        assert "empty" in result.lower()
+
+    def test_detector_unavailable_degrades_with_guidance(self, m, storage):
+        storage._contradiction_detector = None
+        result = m.check_consistency.fn(statement=STATEMENT)
+        assert "unavailable" in result.lower()

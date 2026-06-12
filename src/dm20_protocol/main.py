@@ -5269,6 +5269,93 @@ def get_session_recap(
     return "\n".join(lines)
 
 
+_CONTRADICTION_UNAVAILABLE = (
+    "Contradiction check unavailable: the fact graph could not be loaded "
+    "for this campaign (split-format campaigns only)."
+)
+
+
+@mcp.tool
+def check_consistency(
+    statement: Annotated[str, Field(description="The proposed statement to check against established facts (e.g., 'Father Donavich is dead')")],
+    category: Annotated[str | None, Field(description="Optional fact category to narrow the check: event, location, npc, item, quest, world")] = None,
+    tags: Annotated[str | None, Field(description="Optional tags to narrow the check (JSON list or comma-separated)")] = None,
+) -> str:
+    """Check a proposed statement for conflicts with established facts.
+
+    Read-only pre-narration check: compares the statement against the fact
+    graph and reports contradictions with severity, the conflicting facts,
+    and suggested resolutions ranked by confidence. Nothing is persisted —
+    to record a decision about a reported contradiction, call
+    resolve_contradiction with its id.
+    """
+    campaign = storage.get_current_campaign()
+    if not campaign:
+        return "No active campaign. Load or create a campaign first."
+
+    detector = storage.contradiction_detector
+    fact_db = storage.fact_db
+    if detector is None or fact_db is None:
+        return _CONTRADICTION_UNAVAILABLE
+
+    statement = statement.strip()
+    if not statement:
+        return "Statement cannot be empty."
+
+    from .claudmaster.consistency.models import FactCategory
+
+    category_enum = None
+    if category:
+        try:
+            category_enum = FactCategory(category)
+        except ValueError:
+            valid = ", ".join(c.value for c in FactCategory)
+            return f"Invalid category '{category}'. Valid categories: {valid}"
+
+    related_tags = _parse_json_list(tags) if tags else None
+
+    detected = detector.check_statement(
+        statement,
+        _current_session_number(),
+        category=category_enum,
+        related_tags=related_tags,
+        register=False,
+    )
+
+    if not detected:
+        return (
+            f"✅ No conflicts detected: '{statement}' is consistent with the "
+            "established facts."
+        )
+
+    lines = [
+        f"⚠️ {len(detected)} potential contradiction(s) detected for: '{statement}'",
+        "",
+    ]
+    for c in detected:
+        lines.append(f"### {c.id} — {c.severity.value} ({c.contradiction_type.value})")
+        lines.append("**Conflicts with:**")
+        for fact_id in c.conflicting_fact_ids:
+            fact = fact_db.get_fact(fact_id)
+            if fact is not None:
+                lines.append(f"- {fact_id} (session {fact.session_number}): {fact.content}")
+            else:
+                lines.append(f"- {fact_id}")
+        lines.append("**Suggested resolutions:**")
+        for s in detector.suggest_resolution(c):
+            side = f" Side effects: {'; '.join(s.side_effects)}." if s.side_effects else ""
+            lines.append(
+                f"- {s.strategy.value} (confidence {s.confidence:.0%}): {s.description}.{side}"
+            )
+        lines.append("")
+    lines.append(
+        "Nothing was persisted. To record a decision, call "
+        "resolve_contradiction(contradiction_id, strategy) — ids are valid for "
+        "this session."
+    )
+    return "\n".join(lines)
+
+
 # --------------------------------------------------------------------------
 # Character Import Tools (Epic: D&D Beyond Character Import)
 # --------------------------------------------------------------------------
