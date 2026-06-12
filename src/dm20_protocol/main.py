@@ -17,6 +17,12 @@ from fastmcp import FastMCP
 from pydantic import Field
 
 from .storage import DnDStorage
+from .claudmaster.consistency.timeline import (
+    TimelineEvent,
+    TimeUnit,
+    day_number_to_game_time,
+    format_day_relative,
+)
 from .models import (
     Character, NPC, Location, Quest, SessionNote, AdventureEvent, EventType,
     AbilityScore, CharacterClass, Race, Item, Spell
@@ -1760,6 +1766,116 @@ def get_game_state() -> str:
 """
 
     return state_info
+
+_TIMELINE_UNAVAILABLE = (
+    "Timeline unavailable for this campaign (legacy format or failed to load). "
+    "Structured time tracking requires a split-format campaign."
+)
+
+
+@mcp.tool
+def set_game_time(
+    day: Annotated[int, Field(description="Campaign day number (Day 1 = campaign start); the engine maps it onto the calendar — do not convert to months/years yourself", ge=1)],
+    hour: Annotated[int, Field(description="Hour of day (0-23)", ge=0, le=23)] = 8,
+    minute: Annotated[int, Field(description="Minute (0-59)", ge=0, le=59)] = 0,
+    date_display: Annotated[str | None, Field(description="Narrative date for display (e.g. 'Dawn — first morning in Barovia'); derived from the structured time if omitted")] = None,
+) -> str:
+    """Set the campaign timeline clock to a specific day and time. Anchors the timeline."""
+    tracker = storage.timeline_tracker
+    if tracker is None:
+        return _TIMELINE_UNAVAILABLE
+
+    new_time = day_number_to_game_time(day, hour=hour, minute=minute)
+    tracker.set_time(new_time)
+    tracker.anchored = True
+    tracker.save()
+
+    display = date_display or format_day_relative(new_time)
+    storage.update_game_state(current_date_in_game=display)
+    return (
+        f"Timeline clock set to {format_day_relative(new_time)}. "
+        f"In-game date display: '{display}'"
+    )
+
+
+@mcp.tool
+def advance_game_time(
+    amount: Annotated[int, Field(description="How much time passes", ge=1)],
+    unit: Annotated[Literal["round", "minute", "hour", "day", "week", "month"], Field(description="Time unit")],
+    date_display: Annotated[str | None, Field(description="Narrative date for display; derived from the new structured time if omitted")] = None,
+) -> str:
+    """Advance the campaign timeline clock (travel, rests, scene transitions)."""
+    tracker = storage.timeline_tracker
+    if tracker is None:
+        return _TIMELINE_UNAVAILABLE
+    if not tracker.anchored:
+        return (
+            "Timeline clock is not anchored yet — anchor it first with set_game_time "
+            "(e.g. set_game_time(day=2, hour=6) for 'Day 2, dawn')."
+        )
+
+    old_time = tracker.get_current_time()
+    new_time = tracker.advance_time(amount, TimeUnit(unit))
+    tracker.save()
+
+    display = date_display or format_day_relative(new_time)
+    storage.update_game_state(current_date_in_game=display)
+    return (
+        f"Timeline clock advanced: {format_day_relative(old_time)} → "
+        f"{format_day_relative(new_time)}. In-game date display: '{display}'"
+    )
+
+
+@mcp.tool
+def get_timeline(
+    from_day: Annotated[int | None, Field(description="Start of a day range to query (campaign day number)", ge=1)] = None,
+    to_day: Annotated[int | None, Field(description="End of the day range (defaults to from_day, i.e. a single day)", ge=1)] = None,
+    limit: Annotated[int, Field(description="Max recent events to show when no range is given", ge=1)] = 10,
+) -> str:
+    """Show the campaign timeline clock and query events at or between game days."""
+    tracker = storage.timeline_tracker
+    if tracker is None:
+        return _TIMELINE_UNAVAILABLE
+
+    current = tracker.get_current_time()
+    anchored_text = (
+        "anchored"
+        if tracker.anchored
+        else "NOT anchored — anchor with set_game_time before logging events"
+    )
+    lines = [
+        "**Campaign Timeline**",
+        f"**Clock:** {format_day_relative(current)} ({anchored_text})",
+        f"**Events recorded:** {tracker.event_count}",
+        "",
+    ]
+
+    if from_day is not None:
+        end_day = to_day if to_day is not None else from_day
+        start = day_number_to_game_time(from_day, hour=0, minute=0)
+        end = day_number_to_game_time(end_day, hour=23, minute=59)
+        events = tracker.get_events_between(start, end)
+        lines.append(
+            f"**Events on Day {from_day}:**"
+            if end_day == from_day
+            else f"**Events from Day {from_day} to Day {end_day}:**"
+        )
+    else:
+        events = tracker.events[-limit:]
+        lines.append(f"**Most recent events (up to {limit}):**")
+
+    if not events:
+        lines.append("(none)")
+    for e in events:
+        location_text = f" — {e.location}" if e.location else ""
+        chars_text = f" [{', '.join(e.characters_involved)}]" if e.characters_involved else ""
+        lines.append(
+            f"- {format_day_relative(e.game_time)}: {e.description}"
+            f"{location_text}{chars_text} (session {e.real_session})"
+        )
+
+    return "\n".join(lines)
+
 
 def _prefetch_state_update() -> None:
     """Feed current game state to PrefetchEngine if active."""
