@@ -79,6 +79,9 @@ class ContradictionDetector:
         self._fact_db = fact_database
         self._npc_tracker = npc_tracker
         self._contradictions: list[Contradiction] = []
+        # Detections from non-registering checks, keyed by contradiction id.
+        # In-memory only: never serialized, dies with the instance.
+        self._pending: dict[str, Contradiction] = {}
         self._campaign_path = campaign_path or fact_database.campaign_path
 
         # Ensure the campaign directory exists
@@ -208,7 +211,8 @@ class ContradictionDetector:
         statement: str,
         session_number: int,
         category: FactCategory | None = None,
-        related_tags: list[str] | None = None
+        related_tags: list[str] | None = None,
+        register: bool = True,
     ) -> list[Contradiction]:
         """
         Check a new statement against established facts.
@@ -224,6 +228,9 @@ class ContradictionDetector:
             session_number: Current session number
             category: Optional category to filter facts
             related_tags: Optional tags to filter facts
+            register: When False, detections are parked in the in-memory
+                pending buffer (resolvable via resolve()) instead of the
+                registered list, so a pure check never reaches save()
 
         Returns:
             List of detected contradictions (may be empty)
@@ -280,7 +287,10 @@ class ContradictionDetector:
                     resolved=False
                 )
 
-                self._contradictions.append(contradiction)
+                if register:
+                    self._contradictions.append(contradiction)
+                else:
+                    self._pending[contradiction.id] = contradiction
                 detected.append(contradiction)
 
                 logger.warning(
@@ -452,6 +462,10 @@ class ContradictionDetector:
         """
         Mark a contradiction as resolved.
 
+        Pending detections (from non-registering checks) are looked up first;
+        resolving one moves it to the registered list so a subsequent save()
+        persists it with the chosen strategy.
+
         Args:
             contradiction_id: ID of the contradiction to resolve
             strategy: The resolution strategy being used
@@ -460,6 +474,17 @@ class ContradictionDetector:
         Returns:
             True if contradiction was found and resolved, False otherwise
         """
+        pending = self._pending.pop(contradiction_id, None)
+        if pending is not None:
+            pending.resolved = True
+            pending.resolution = strategy
+            pending.resolution_notes = notes
+            self._contradictions.append(pending)
+            logger.info(
+                f"Resolved pending contradiction {contradiction_id} using {strategy.value}"
+            )
+            return True
+
         for contradiction in self._contradictions:
             if contradiction.id == contradiction_id:
                 contradiction.resolved = True

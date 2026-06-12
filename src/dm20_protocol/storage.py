@@ -101,6 +101,7 @@ class DnDStorage:
         self._npc_knowledge_tracker = None
         self._party_knowledge = None
         self._timeline_tracker = None
+        self._contradiction_detector = None
 
         # Load existing data
         logger.debug("📂 Loading initial data...")
@@ -651,6 +652,7 @@ class DnDStorage:
             self._npc_knowledge_tracker = None
             self._party_knowledge = None
             self._timeline_tracker = None
+            self._contradiction_detector = None
             if hasattr(self, '_split_backend'):
                 self._split_backend._current_campaign = None
             logger.info(f"🧹 Cleared active campaign state (was: '{name}')")
@@ -1442,24 +1444,31 @@ class DnDStorage:
         """Get the PartyKnowledge tracker for the current campaign (or None)."""
         return self._party_knowledge
 
+    @property
+    def contradiction_detector(self):
+        """Get the ContradictionDetector for the current campaign (or None)."""
+        return self._contradiction_detector
+
     def _load_fact_graph(self) -> None:
         """Load or initialize the fact graph for the current campaign.
 
         Only applicable to split storage campaigns. Builds the FactDatabase
-        plus the NPCKnowledgeTracker and PartyKnowledge views over it, loading
-        any persisted state from the campaign directory. On failure all three
-        accessors degrade to None — fact graph problems must never break the
-        primary journal/entity write path.
+        plus the NPCKnowledgeTracker, PartyKnowledge, and ContradictionDetector
+        views over it, loading any persisted state from the campaign directory.
+        On failure all four accessors degrade to None — fact graph problems
+        must never break the primary journal/entity write path.
         """
         self._fact_db = None
         self._npc_knowledge_tracker = None
         self._party_knowledge = None
+        self._contradiction_detector = None
 
         if self._current_format != StorageFormat.SPLIT or not self._current_campaign:
             return
 
         campaign_dir = self._split_backend._get_campaign_dir(self._current_campaign.name)
         try:
+            from .claudmaster.consistency.contradiction import ContradictionDetector
             from .claudmaster.consistency.fact_database import FactDatabase
             from .claudmaster.consistency.npc_knowledge import NPCKnowledgeTracker
             from .consistency.party_knowledge import PartyKnowledge
@@ -1467,6 +1476,9 @@ class DnDStorage:
             fact_db = FactDatabase(campaign_dir)
             self._npc_knowledge_tracker = NPCKnowledgeTracker(fact_db, campaign_dir)
             self._party_knowledge = PartyKnowledge(fact_db, campaign_dir)
+            self._contradiction_detector = ContradictionDetector(
+                fact_db, self._npc_knowledge_tracker, campaign_dir
+            )
             self._fact_db = fact_db
             logger.info(
                 f"Loaded fact graph for campaign '{self._current_campaign.name}' "
@@ -1477,6 +1489,7 @@ class DnDStorage:
             self._fact_db = None
             self._npc_knowledge_tracker = None
             self._party_knowledge = None
+            self._contradiction_detector = None
 
     # ------------------------------------------------------------------
     # Timeline Tracker Management

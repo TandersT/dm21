@@ -745,3 +745,72 @@ class TestSaveLoad:
         assert data["metadata"]["total_detected"] == 2
         assert data["metadata"]["total_resolved"] == 1
         assert "last_updated" in data["metadata"]
+
+
+class TestPendingChecks:
+    """Non-registering check mode and pending resolution (DM2-12)."""
+
+    def _seed_conflicting_fact(self, fact_db):
+        fact_db.add_fact(Fact(
+            id="fact_donavich",
+            category=FactCategory.NPC,
+            content="Father Donavich is alive and hiding in the church",
+            session_number=1,
+        ))
+
+    def test_register_false_keeps_registered_list_empty(self, detector, fact_db):
+        self._seed_conflicting_fact(fact_db)
+        detected = detector.check_statement(
+            "Father Donavich is dead in the church", 2, register=False
+        )
+        assert len(detected) == 1
+        assert detector.get_all_contradictions() == []
+
+    def test_register_false_parks_detections_in_pending(self, detector, fact_db):
+        self._seed_conflicting_fact(fact_db)
+        detected = detector.check_statement(
+            "Father Donavich is dead in the church", 2, register=False
+        )
+        assert detector._pending[detected[0].id] is detected[0]
+
+    def test_register_default_still_registers(self, detector, fact_db):
+        self._seed_conflicting_fact(fact_db)
+        detector.check_statement("Father Donavich is dead in the church", 2)
+        assert len(detector.get_all_contradictions()) == 1
+        assert detector._pending == {}
+
+    def test_resolve_pending_moves_to_registered_with_strategy_and_notes(self, detector, fact_db):
+        self._seed_conflicting_fact(fact_db)
+        detected = detector.check_statement(
+            "Father Donavich is dead in the church", 2, register=False
+        )
+        cid = detected[0].id
+        assert detector.resolve(cid, ResolutionStrategy.RETCON, "He died offscreen") is True
+        assert cid not in detector._pending
+        registered = detector.get_all_contradictions()
+        assert len(registered) == 1
+        assert registered[0].resolved is True
+        assert registered[0].resolution == ResolutionStrategy.RETCON
+        assert registered[0].resolution_notes == "He died offscreen"
+
+    def test_save_excludes_pending(self, detector, fact_db, temp_campaign_path):
+        self._seed_conflicting_fact(fact_db)
+        detector.check_statement(
+            "Father Donavich is dead in the church", 2, register=False
+        )
+        detector.save()
+        reloaded = ContradictionDetector(fact_db, campaign_path=temp_campaign_path)
+        assert reloaded.get_all_contradictions() == []
+
+    def test_resolved_pending_survives_save_load_roundtrip(self, detector, fact_db, temp_campaign_path):
+        self._seed_conflicting_fact(fact_db)
+        detected = detector.check_statement(
+            "Father Donavich is dead in the church", 2, register=False
+        )
+        detector.resolve(detected[0].id, ResolutionStrategy.FLAG_FOR_DM)
+        detector.save()
+        reloaded = ContradictionDetector(fact_db, campaign_path=temp_campaign_path)
+        contradictions = reloaded.get_all_contradictions()
+        assert len(contradictions) == 1
+        assert contradictions[0].id == detected[0].id
+        assert contradictions[0].resolution == ResolutionStrategy.FLAG_FOR_DM

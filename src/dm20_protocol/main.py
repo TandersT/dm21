@@ -5278,6 +5278,147 @@ def get_session_recap(
     return "\n".join(lines)
 
 
+_CONTRADICTION_UNAVAILABLE = (
+    "Contradiction check unavailable: the fact graph could not be loaded "
+    "for this campaign (split-format campaigns only)."
+)
+
+
+@mcp.tool
+def check_consistency(
+    statement: Annotated[str, Field(description="The proposed statement to check against established facts (e.g., 'Father Donavich is dead')")],
+    category: Annotated[str | None, Field(description="Optional fact category to narrow the check: event, location, npc, item, quest, world")] = None,
+    tags: Annotated[str | None, Field(description="Optional tags to narrow the check (JSON list or comma-separated)")] = None,
+) -> str:
+    """Check a proposed statement for conflicts with established facts.
+
+    Read-only pre-narration check: compares the statement against the fact
+    graph and reports contradictions with severity, the conflicting facts,
+    and suggested resolutions ranked by confidence. Nothing is persisted —
+    to record a decision about a reported contradiction, call
+    resolve_contradiction with its id.
+    """
+    campaign = storage.get_current_campaign()
+    if not campaign:
+        return "No active campaign. Load or create a campaign first."
+
+    detector = storage.contradiction_detector
+    fact_db = storage.fact_db
+    if detector is None or fact_db is None:
+        return _CONTRADICTION_UNAVAILABLE
+
+    statement = statement.strip()
+    if not statement:
+        return "Statement cannot be empty."
+
+    from .claudmaster.consistency.models import FactCategory
+
+    category_enum = None
+    if category:
+        try:
+            category_enum = FactCategory(category)
+        except ValueError:
+            valid = ", ".join(c.value for c in FactCategory)
+            return f"Invalid category '{category}'. Valid categories: {valid}"
+
+    related_tags = _parse_json_list(tags) if tags else None
+
+    detected = detector.check_statement(
+        statement,
+        _current_session_number(),
+        category=category_enum,
+        related_tags=related_tags,
+        register=False,
+    )
+
+    if not detected:
+        return (
+            f"✅ No conflicts detected for '{statement}' against the established "
+            "facts (keyword-based heuristic — not a guarantee of consistency)."
+        )
+
+    lines = [
+        f"⚠️ {len(detected)} potential contradiction(s) detected for: '{statement}'",
+        "",
+    ]
+    for c in detected:
+        lines.append(f"### {c.id} — {c.severity.value} ({c.contradiction_type.value})")
+        lines.append("**Conflicts with:**")
+        for fact_id in c.conflicting_fact_ids:
+            fact = fact_db.get_fact(fact_id)
+            if fact is not None:
+                lines.append(f"- {fact_id} (session {fact.session_number}): {fact.content}")
+            else:
+                lines.append(f"- {fact_id}")
+        lines.append("**Suggested resolutions:**")
+        for s in detector.suggest_resolution(c):
+            side = f" Side effects: {'; '.join(s.side_effects)}." if s.side_effects else ""
+            lines.append(
+                f"- {s.strategy.value} (confidence {s.confidence:.0%}): {s.description}.{side}"
+            )
+        lines.append("")
+    lines.append(
+        "Nothing was persisted. To record a decision, call "
+        "resolve_contradiction(contradiction_id, strategy) — ids are valid for "
+        "this session."
+    )
+    return "\n".join(lines)
+
+
+@mcp.tool
+def resolve_contradiction(
+    contradiction_id: Annotated[str, Field(description="Contradiction id from check_consistency output (e.g., 'ctr_1a2b3c4d')")],
+    strategy: Annotated[str, Field(description="Chosen resolution: retcon, explain, ignore, or flag (escalate to the human DM)")],
+    notes: Annotated[str | None, Field(description="Optional notes about the decision")] = None,
+) -> str:
+    """Persist a detected contradiction with the DM's chosen resolution.
+
+    Records the decision in contradictions.json. Resolution is bookkeeping
+    only: a retcon does not edit the conflicting fact — update it via the
+    usual write tools afterwards. Contradiction ids come from
+    check_consistency and are valid for the current session.
+    """
+    campaign = storage.get_current_campaign()
+    if not campaign:
+        return "No active campaign. Load or create a campaign first."
+
+    detector = storage.contradiction_detector
+    if detector is None:
+        return _CONTRADICTION_UNAVAILABLE
+
+    from .claudmaster.consistency.models import ResolutionStrategy
+
+    normalized = "flag_for_dm" if strategy == "flag" else strategy
+    try:
+        strategy_enum = ResolutionStrategy(normalized)
+    except ValueError:
+        valid = ", ".join(s.value for s in ResolutionStrategy)
+        return (
+            f"Invalid strategy '{strategy}'. Valid strategies: {valid} "
+            "(or 'flag' as shorthand for flag_for_dm)"
+        )
+
+    if not detector.resolve(contradiction_id, strategy_enum, notes):
+        return (
+            f"Contradiction '{contradiction_id}' not found. Detected contradictions "
+            "are session-scoped — re-run check_consistency to detect it again."
+        )
+
+    detector.save()
+
+    reminder = (
+        " Remember: resolving records the decision only — apply the retcon by "
+        "updating the conflicting fact/journal via the usual write tools."
+        if strategy_enum == ResolutionStrategy.RETCON
+        else ""
+    )
+    notes_text = f" Notes: {notes}" if notes else ""
+    return (
+        f"✅ Contradiction {contradiction_id} resolved as {strategy_enum.value} "
+        f"and persisted to contradictions.json.{notes_text}{reminder}"
+    )
+
+
 # --------------------------------------------------------------------------
 # Character Import Tools (Epic: D&D Beyond Character Import)
 # --------------------------------------------------------------------------
