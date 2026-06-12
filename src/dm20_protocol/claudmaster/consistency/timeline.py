@@ -194,6 +194,41 @@ TIME_OF_DAY = {
     (21, 24): "night",
 }
 
+def time_of_day(hour: int) -> str:
+    """Narrative description for an hour of day ("dawn", "morning", ...)."""
+    for (start, end), description in TIME_OF_DAY.items():
+        if start <= hour < end:
+            return description
+    return "night"
+
+
+def format_day_relative(time: GameTime, epoch: GameTime | None = None) -> str:
+    """Format a GameTime relative to the campaign epoch: "Day 2, dawn (05:30)".
+
+    Day math uses date components only, so times earlier in the day than the
+    epoch's 08:00 stay on the same day. Epoch defaults to GameTime() defaults
+    (the campaign's Day 1, per the DM2-6 date-model spike).
+    """
+    epoch = epoch or GameTime()
+    days = (
+        (time.year - epoch.year) * 12 * 30
+        + (time.month - epoch.month) * 30
+        + (time.day - epoch.day)
+    )
+    return f"Day {days + 1}, {time_of_day(time.hour)} ({time.hour:02d}:{time.minute:02d})"
+
+
+def day_number_to_game_time(day: int, hour: int = 8, minute: int = 0) -> GameTime:
+    """Map a campaign day number (Day 1 = epoch) to a GameTime.
+
+    Day N = epoch advanced by N-1 days, with the time of day applied on top —
+    rolls through months/years via GameTime.advance, so Day 45 lands on
+    month 2, day 15 instead of failing the day<=30 validation.
+    """
+    base = GameTime().advance(day - 1, TimeUnit.DAY)
+    return GameTime(year=base.year, month=base.month, day=base.day, hour=hour, minute=minute)
+
+
 # Travel times in minutes (walking speed ~3mph)
 DEFAULT_TRAVEL_SPEEDS: dict[str, float] = {
     "walking": 3.0,      # miles per hour
@@ -230,6 +265,7 @@ class TimelineTracker:
         self._current_time = GameTime()
         self._events: list[TimelineEvent] = []
         self._calendar = {"months_per_year": 12, "days_per_month": 30, "hours_per_day": 24}
+        self._anchored = False
         self.campaign_path.mkdir(parents=True, exist_ok=True)
         self.load()
 
@@ -241,6 +277,20 @@ class TimelineTracker:
             Current GameTime instance
         """
         return self._current_time
+
+    @property
+    def anchored(self) -> bool:
+        """Whether the clock has been explicitly anchored (DM2-6 migration marker)."""
+        return self._anchored
+
+    @anchored.setter
+    def anchored(self, value: bool) -> None:
+        self._anchored = bool(value)
+
+    @property
+    def events(self) -> list[TimelineEvent]:
+        """Chronological copy of the timeline events."""
+        return list(self._events)
 
     def advance_time(self, amount: int, unit: TimeUnit) -> GameTime:
         """
@@ -364,11 +414,7 @@ class TimelineTracker:
         Returns:
             Description like "dawn", "morning", "night", etc.
         """
-        hour = self._current_time.hour
-        for (start, end), description in TIME_OF_DAY.items():
-            if start <= hour < end:
-                return description
-        return "night"
+        return time_of_day(self._current_time.hour)
 
     @property
     def event_count(self) -> int:
@@ -385,6 +431,7 @@ class TimelineTracker:
         data = {
             "version": "1.0",
             "current_time": self._current_time.model_dump(),
+            "anchored": self._anchored,
             "events": [e.model_dump() for e in self._events],
             "calendar": self._calendar,
         }
@@ -406,6 +453,7 @@ class TimelineTracker:
         try:
             data = json.loads(path.read_text())
             self._current_time = GameTime(**data.get("current_time", {}))
+            self._anchored = bool(data.get("anchored", False))
             self._events = [TimelineEvent(**e) for e in data.get("events", [])]
             self._calendar = data.get("calendar", self._calendar)
             logger.info(f"Loaded timeline with {len(self._events)} events from {path}")
@@ -420,4 +468,7 @@ __all__ = [
     "TimelineTracker",
     "TIME_OF_DAY",
     "DEFAULT_TRAVEL_SPEEDS",
+    "time_of_day",
+    "format_day_relative",
+    "day_number_to_game_time",
 ]

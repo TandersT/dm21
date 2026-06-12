@@ -5,6 +5,8 @@ Tests GameTime, TimelineEvent, and TimelineTracker classes for managing
 in-game time progression and event tracking.
 """
 
+import json
+
 import pytest
 from pathlib import Path
 
@@ -14,6 +16,8 @@ from dm20_protocol.claudmaster.consistency.timeline import (
     TimelineEvent,
     TimelineTracker,
     TIME_OF_DAY,
+    day_number_to_game_time,
+    format_day_relative,
 )
 
 
@@ -357,3 +361,75 @@ class TestTimelineTracker:
         assert len(events) == 1
         assert events[0].description == "Saved event"
         assert events[0].location == "Castle"
+
+
+class TestAnchoredFlag:
+    """Persisted anchoring marker for the DM2-6 migration convention."""
+
+    def test_fresh_tracker_is_unanchored(self, tmp_path):
+        tracker = TimelineTracker(tmp_path)
+        assert tracker.anchored is False
+
+    def test_anchored_flag_round_trips_through_save_and_load(self, tmp_path):
+        tracker = TimelineTracker(tmp_path)
+        tracker.anchored = True
+        tracker.save()
+        reloaded = TimelineTracker(tmp_path)
+        assert reloaded.anchored is True
+
+    def test_timeline_file_without_flag_loads_unanchored(self, tmp_path):
+        tracker = TimelineTracker(tmp_path)
+        tracker.save()
+        path = tmp_path / "timeline.json"
+        data = json.loads(path.read_text())
+        del data["anchored"]
+        path.write_text(json.dumps(data))
+        reloaded = TimelineTracker(tmp_path)
+        assert reloaded.anchored is False
+
+
+class TestEventsAccessor:
+    def test_events_returns_chronological_copy(self, tmp_path):
+        tracker = TimelineTracker(tmp_path)
+        late = TimelineEvent(game_time=GameTime(day=3), real_session=1, description="late")
+        early = TimelineEvent(game_time=GameTime(day=1), real_session=1, description="early")
+        tracker.add_event(late)
+        tracker.add_event(early)
+        events = tracker.events
+        assert [e.description for e in events] == ["early", "late"]
+        events.clear()
+        assert tracker.event_count == 2  # accessor returns a copy
+
+
+class TestDayRelativeHelpers:
+    """Day-relative formatter and Day-N mapping from the DM2-6 spike."""
+
+    def test_epoch_formats_as_day_one_morning(self):
+        assert format_day_relative(GameTime()) == "Day 1, morning (08:00)"
+
+    def test_next_day_dawn(self):
+        assert format_day_relative(GameTime(day=2, hour=5, minute=30)) == "Day 2, dawn (05:30)"
+
+    def test_early_hours_do_not_shift_the_day(self):
+        # Hour earlier than the epoch's 08:00 must not push the day count back
+        assert format_day_relative(GameTime(hour=0)) == "Day 1, deep night (00:00)"
+
+    def test_year_rollover_keeps_counting_days(self):
+        # 12 months x 30 days: Day 361 = year+1, month 1, day 1
+        assert format_day_relative(GameTime(year=1493)) == "Day 361, morning (08:00)"
+
+    def test_day_number_to_game_time_maps_day_two(self):
+        gt = day_number_to_game_time(2, hour=5, minute=30)
+        assert (gt.year, gt.month, gt.day, gt.hour, gt.minute) == (1492, 1, 2, 5, 30)
+
+    def test_day_number_to_game_time_rolls_months(self):
+        # Spike example: Day 45 -> month 2, day 15 (not day=45, which would fail validation)
+        gt = day_number_to_game_time(45, hour=6)
+        assert (gt.month, gt.day, gt.hour, gt.minute) == (2, 15, 6, 0)
+
+    def test_day_number_defaults_to_epoch_morning(self):
+        gt = day_number_to_game_time(1)
+        assert (gt.hour, gt.minute) == (8, 0)
+
+    def test_day_number_round_trips_with_formatter(self):
+        assert format_day_relative(day_number_to_game_time(45, hour=6)) == "Day 45, dawn (06:00)"
