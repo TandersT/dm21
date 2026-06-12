@@ -5326,6 +5326,101 @@ def propagate_npc_knowledge(
 
 
 @mcp.tool
+def npc_knowledge(
+    npc: Annotated[str | None, Field(description="NPC name or ID — list everything this NPC knows")] = None,
+    fact: Annotated[str | None, Field(description="Fact id or fact content — list which NPCs know it")] = None,
+) -> str:
+    """Query NPC knowledge: what an NPC knows, or which NPCs know a fact.
+
+    Read-only. Pass exactly one argument: npc for the NPC's full knowledge
+    (facts with confidence, source, and session, plus interaction count),
+    or fact for every NPC that holds it and how certain they are.
+    """
+    campaign = storage.get_current_campaign()
+    if not campaign:
+        return "No active campaign. Load or create a campaign first."
+
+    fact_db = storage.fact_db
+    tracker = storage.npc_knowledge_tracker
+    if fact_db is None or tracker is None:
+        return _NPC_KNOWLEDGE_UNAVAILABLE
+
+    if (npc is None) == (fact is None):
+        return "Provide exactly one of: npc (what they know) or fact (who knows it)."
+
+    names_by_id = {n.id: n.name for n in storage.list_npcs_detailed()}
+
+    if npc is not None:
+        npc_obj = _resolve_npc(npc)
+        if npc_obj is None:
+            return f"NPC '{npc}' not found. Create the NPC first with create_npc."
+
+        context = tracker.get_knowledge_context(npc_obj.id)
+        entries = context["knowledge_entries"]
+        if not entries:
+            return f"'{npc_obj.name}' has no recorded knowledge."
+
+        facts_by_id = {f.id: f for f in context["known_facts"]}
+        lines = [
+            f"## What '{npc_obj.name}' knows "
+            f"({context['fact_count']} fact(s), {context['interaction_count']} interaction(s))\n"
+        ]
+        for entry in entries:
+            known = facts_by_id.get(entry.fact_id)
+            content = (
+                known.content
+                if known is not None
+                else f"(fact {entry.fact_id} missing from the fact graph)"
+            )
+            source_text = entry.source.value
+            if entry.source_entity:
+                source_name = names_by_id.get(entry.source_entity, entry.source_entity)
+                source_text += f" (from {source_name})"
+            lines.append(f"### {content}")
+            lines.append(f"- **Fact id:** {entry.fact_id}")
+            lines.append(f"- **Source:** {source_text}")
+            lines.append(f"- **Confidence:** {entry.confidence:.2f}")
+            lines.append(f"- **Session:** {entry.acquired_session}")
+            lines.append("")
+        return "\n".join(lines)
+
+    fact = fact.strip()
+    if not fact:
+        return "Fact cannot be empty."
+    fact_id = _resolve_fact_id(fact)
+    if fact_id is None:
+        return f"Fact '{fact}' not found in the fact graph."
+    fact_obj = fact_db.get_fact(fact_id)
+
+    knower_ids = tracker.query_npcs_who_know(fact_id)
+    if not knower_ids:
+        return f"No NPCs know fact {fact_id}: {fact_obj.content}"
+
+    lines = [
+        f"## NPCs who know: {fact_obj.content}",
+        f"({len(knower_ids)} NPC(s), fact {fact_id})\n",
+    ]
+    for npc_id in knower_ids:
+        entry = next(
+            (e for e in tracker.get_npc_knowledge(npc_id) if e.fact_id == fact_id),
+            None,
+        )
+        name = names_by_id.get(npc_id, npc_id)
+        if entry is None:
+            lines.append(f"- **{name}**")
+            continue
+        source_text = entry.source.value
+        if entry.source_entity:
+            source_name = names_by_id.get(entry.source_entity, entry.source_entity)
+            source_text += f" (from {source_name})"
+        lines.append(
+            f"- **{name}** — confidence {entry.confidence:.2f}, {source_text}, "
+            f"session {entry.acquired_session}"
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool
 def sync_facts() -> str:
     """Backfill the fact graph from the existing journal and campaign entities.
 

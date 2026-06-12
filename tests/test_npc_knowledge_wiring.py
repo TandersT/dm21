@@ -282,3 +282,77 @@ class TestPropagateNpcKnowledge:
         storage._current_campaign = None
         result = m.propagate_npc_knowledge.fn(from_npc="A", to_npc="B")
         assert "No active campaign" in result
+
+
+# ── npc_knowledge (query) ───────────────────────────────────────────
+
+
+class TestNpcKnowledgeQuery:
+    def test_what_npc_knows(self, m, storage):
+        m.create_npc.fn(name="Barkeep")
+        m.reveal_fact_to_npc.fn(
+            npc="Barkeep", fact="The mill burned down", source="witnessed"
+        )
+        m.reveal_fact_to_npc.fn(
+            npc="Barkeep", fact="The baron is broke", source="rumor", confidence=0.5
+        )
+
+        result = m.npc_knowledge.fn(npc="Barkeep")
+        assert "What 'Barkeep' knows" in result
+        assert "The mill burned down" in result
+        assert "The baron is broke" in result
+        assert "0.50" in result
+        assert "rumor" in result
+
+    def test_who_knows_fact_by_content(self, m, storage):
+        m.create_npc.fn(name="Barkeep")
+        m.create_npc.fn(name="Captain")
+        m.reveal_fact_to_npc.fn(
+            npc="Barkeep", fact="The mill burned down", source="witnessed"
+        )
+        m.propagate_npc_knowledge.fn(from_npc="Barkeep", to_npc="Captain")
+
+        result = m.npc_knowledge.fn(fact="The mill burned down")
+        assert "Barkeep" in result
+        assert "Captain" in result
+        assert "0.75" in result
+
+    def test_who_knows_fact_by_id(self, m, storage):
+        m.create_npc.fn(name="Barkeep")
+        m.reveal_fact_to_npc.fn(npc="Barkeep", fact="The mill burned down")
+        result = m.npc_knowledge.fn(fact=_pfact_id("The mill burned down"))
+        assert "Barkeep" in result
+
+    def test_npc_with_no_knowledge(self, m, storage):
+        m.create_npc.fn(name="Barkeep")
+        result = m.npc_knowledge.fn(npc="Barkeep")
+        assert "no recorded knowledge" in result
+
+    def test_fact_nobody_knows(self, m, storage):
+        m.record_party_fact.fn(
+            content="The sun rises", category="world", source="s", method="observed"
+        )
+        result = m.npc_knowledge.fn(fact="The sun rises")
+        assert "No NPCs know" in result
+
+    def test_unknown_fact(self, m, storage):
+        result = m.npc_knowledge.fn(fact="Never recorded")
+        assert "not found" in result
+
+    def test_requires_exactly_one_argument(self, m, storage):
+        assert "exactly one" in m.npc_knowledge.fn()
+        assert "exactly one" in m.npc_knowledge.fn(npc="A", fact="B")
+
+    def test_unknown_npc_rejected(self, m, storage):
+        result = m.npc_knowledge.fn(npc="Ghost")
+        assert "not found" in result
+
+    def test_unavailable_without_fact_graph(self, m, storage):
+        storage._fact_db = None
+        result = m.npc_knowledge.fn(npc="Barkeep")
+        assert "could not be loaded" in result
+
+    def test_requires_campaign(self, m, storage):
+        storage._current_campaign = None
+        result = m.npc_knowledge.fn(npc="Barkeep")
+        assert "No active campaign" in result
