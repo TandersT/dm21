@@ -1857,8 +1857,8 @@ def get_game_state() -> str:
     return state_info
 
 _TIMELINE_UNAVAILABLE = (
-    "Timeline unavailable for this campaign (legacy format or failed to load). "
-    "Structured time tracking requires a split-format campaign."
+    "Timeline unavailable: the timeline tracker could not be loaded "
+    "for this campaign (split-format campaigns only)."
 )
 
 
@@ -1870,6 +1870,9 @@ def set_game_time(
     date_display: Annotated[str | None, Field(description="Narrative date for display (e.g. 'Dawn — first morning in Barovia'); derived from the structured time if omitted")] = None,
 ) -> str:
     """Set the campaign timeline clock to a specific day and time. Anchors the timeline."""
+    if not storage.get_current_campaign():
+        return "No active campaign. Load or create a campaign first."
+
     tracker = storage.timeline_tracker
     if tracker is None:
         return _TIMELINE_UNAVAILABLE
@@ -1901,6 +1904,9 @@ def advance_game_time(
     date_display: Annotated[str | None, Field(description="Narrative date for display; derived from the new structured time if omitted")] = None,
 ) -> str:
     """Advance the campaign timeline clock (travel, rests, scene transitions)."""
+    if not storage.get_current_campaign():
+        return "No active campaign. Load or create a campaign first."
+
     tracker = storage.timeline_tracker
     if tracker is None:
         return _TIMELINE_UNAVAILABLE
@@ -1929,6 +1935,9 @@ def get_timeline(
     limit: Annotated[int, Field(description="Max recent events to show when no range is given", ge=1)] = 10,
 ) -> str:
     """Show the campaign timeline clock and query events at or between game days."""
+    if not storage.get_current_campaign():
+        return "No active campaign. Load or create a campaign first."
+
     tracker = storage.timeline_tracker
     if tracker is None:
         return _TIMELINE_UNAVAILABLE
