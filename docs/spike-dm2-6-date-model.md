@@ -45,7 +45,10 @@ from the structure.
 ### 2. Hybrid: freeform display + structured clock — **chosen**
 
 Keep `current_date_in_game` as the narration/display authority; make `GameTime` the
-date-math authority. Detailed below.
+date-math authority. Detailed below. Note one deliberate deviation from the ticket's
+literal candidate name ("structured **field**"): the structured value lives in
+`TimelineTracker.current_time`, not in a new field on `GameState` — same hybrid family,
+relocated to avoid a second persisted copy (rationale below).
 
 ### 3. Parse-on-write — rejected
 
@@ -83,12 +86,17 @@ cleared on close, degrading to `None` on failure — see
 
 ### Tool-surface sketch for DM2-11 (informational — not built in this spike)
 
+- **Journal-write stamping rule (the decision DM2-11 defers to this spike):** journal
+  writes stamp their `TimelineEvent` with `TimelineTracker.current_time` *at the moment
+  of the write*, engine-side — the LLM never supplies a per-event `GameTime`.
+  `TimelineEvent.real_session` comes from `game_state.current_session`.
 - `update_game_state` gains optional structured time parameters (set semantics), and/or
   a new `advance_time(amount, unit)` tool maps to `TimelineTracker.advance_time`.
 - When structured time changes and no prose is supplied, derive a serviceable display
-  from `GameTime.to_string()` plus the `TIME_OF_DAY` table (e.g. "Day 2, dawn") so the
-  prose never silently goes stale. An explicit prose argument always overrides the
-  derived text.
+  from the `GameTime` value plus the `TIME_OF_DAY` table (e.g. "Day 2, dawn") so the
+  prose never silently goes stale. The existing `to_string()` formats all include
+  year/month, so DM2-11 needs a small day-relative formatter (days since epoch + time
+  of day). An explicit prose argument always overrides the derived text.
 - Prose-only updates (today's behavior) keep working, but the tool response states that
   the timeline clock did not advance — the LLM sees the gap instead of assuming the
   engine inferred time from prose.
@@ -97,7 +105,8 @@ cleared on close, degrading to `None` on failure — see
 
 - Campaign epoch = `GameTime()` defaults: year 1492, month 1, day 1, 08:00.
 - Epoch ≙ the campaign's "Day 1"; prose matching the common `Day N` pattern maps to
-  `day = N` offset from the epoch.
+  *the epoch advanced by (N−1) days* — not `day = N`, which would fail `GameTime`'s
+  `day ≤ 30` validation for month-plus campaigns (Day 45 → month 2, day 15).
 - The year stays at the Forgotten Realms default unless the DM explicitly sets one;
   it only matters for relative math, not lore accuracy.
 
@@ -108,11 +117,16 @@ resume):
 
 1. **No schema migration.** Old campaigns simply have no `timeline.json` yet;
    `TimelineTracker.load()` already tolerates absence and starts fresh.
-2. **One-time anchoring at resume.** In `/dm:start`, when the timeline is fresh
-   (default `current_time`, zero events) but `current_date_in_game` is set, the DM
-   (LLM) anchors the clock: `Day N` prose auto-offsets from the epoch; anything else
-   the DM estimates from session notes or asks the player, then writes via the time
-   tool. Idempotent: once the timeline is non-fresh, the step is skipped.
+2. **One-time anchoring at resume.** In `/dm:start`, when the timeline is unanchored
+   but `current_date_in_game` is set, the DM (LLM) anchors the clock: `Day N` prose
+   auto-offsets from the epoch; anything else the DM estimates from session notes or
+   asks the player, then writes via the time tool. Two ordering rules DM2-11 must
+   enforce: **anchoring runs before any timeline writes in the resume flow** (an event
+   stamped pre-anchor carries a wrong epoch time that anchoring can't repair), and
+   **"unanchored" is an explicit persisted marker** (e.g. an `anchored` flag in
+   `timeline.json`, or the file's absence) — not "default time + zero events", which an
+   early stamped write or a genuine Day-1 anchor would falsely flip. Idempotent: once
+   anchored, the step is skipped.
 3. **No retroactive event stamps.** Historical journal events get no backfilled
    `GameTime` — there is no reliable source, and false precision corrupts
    temporal-order validation. Timeline coverage starts at the anchor point; pre-anchor
@@ -132,10 +146,14 @@ resume):
 
 ## Acceptance hooks for DM2-11
 
+- **Journal stamping** — a journal write produces a `TimelineEvent` carrying the
+  tracker's `current_time` at write time (engine-testable).
 - **Anchoring idempotence** — running the resume anchoring twice leaves
-  `current_time` unchanged.
+  `current_time` unchanged (engine-testable for the marker/tool path; the trigger
+  itself is prompt-level).
 - **Prose-only nudge** — a prose-only `update_game_state` call returns a response
-  noting the timeline clock did not advance.
-- **`Day N` mapping** — `"Day 2, early morning"` anchors to epoch + 1 day
+  noting the timeline clock did not advance (engine-testable).
+- **`Day N` mapping** — `"Day 2, early morning"` anchors to epoch advanced by 1 day
   (`day = 2`), with the time-of-day component left to the DM's structured input rather
-  than parsed.
+  than parsed (the mapping convention is prompt-level; the resulting write is
+  engine-testable).

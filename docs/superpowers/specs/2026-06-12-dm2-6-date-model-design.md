@@ -49,6 +49,10 @@ on `GameState` would create a second persisted copy (`game_state.json` +
 
 ### Tool surface (sketch for DM2-11 — not built in this spike)
 
+- Journal-write stamping rule: journal writes stamp their `TimelineEvent` with
+  `TimelineTracker.current_time` at the moment of the write, engine-side; the LLM never
+  supplies a per-event `GameTime`. `real_session` comes from
+  `game_state.current_session`.
 - `update_game_state` gains optional structured time parameters (set semantics), and/or
   a new `advance_time(amount, unit)` tool maps to `TimelineTracker.advance_time`.
 - When structured time changes and no prose is supplied, derive a serviceable display
@@ -60,8 +64,10 @@ on `GameState` would create a second persisted copy (`game_state.json` +
 ### Anchor convention
 
 Campaign epoch = `GameTime()` defaults (year 1492, month 1, day 1, 08:00) ≙ "Day 1" of
-the campaign. A prose date matching the common `Day N` pattern maps to `day = N` offset
-from the epoch. The year stays at the Forgotten Realms default unless the DM sets one.
+the campaign. A prose date matching the common `Day N` pattern maps to the epoch
+advanced by (N−1) days — not `day = N`, which would fail `GameTime`'s `day ≤ 30`
+validation past one month. The year stays at the Forgotten Realms default unless the DM
+sets one.
 
 ### Migration sketch (existing campaigns)
 
@@ -70,11 +76,13 @@ resume; see `docs/project-continuity-graph-v1.md`):
 
 1. **No schema migration.** `timeline.json` simply doesn't exist yet for old campaigns;
    `TimelineTracker.load()` already tolerates absence and starts fresh.
-2. **One-time anchoring at resume.** In `/dm:start`, when the timeline is fresh
-   (default `current_time`, zero events) but `current_date_in_game` is set, the DM
-   (LLM) anchors the clock: `Day N` prose auto-offsets from the epoch; anything else
-   the DM estimates from session notes or asks the player, then writes via the time
-   tool. Idempotent: once the timeline is non-fresh, the step is skipped.
+2. **One-time anchoring at resume.** In `/dm:start`, when the timeline is unanchored
+   but `current_date_in_game` is set, the DM (LLM) anchors the clock: `Day N` prose
+   auto-offsets from the epoch; anything else the DM estimates from session notes or
+   asks the player, then writes via the time tool. Anchoring must run before any
+   timeline writes in the resume flow, and "unanchored" is an explicit persisted
+   marker (e.g. an `anchored` flag in `timeline.json` or the file's absence), not
+   "default time + zero events". Idempotent: once anchored, the step is skipped.
 3. **No retroactive event stamps.** Historical journal events get no backfilled
    `GameTime` — there is no reliable source, and false precision corrupts
    temporal-order validation. Timeline coverage starts at the anchor point;
