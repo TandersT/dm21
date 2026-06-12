@@ -1402,6 +1402,33 @@ def _resolve_npc(name_or_id: str) -> NPC | None:
     )
 
 
+def _content_fact_id(content: str) -> str:
+    """Deterministic content-derived fact id (pinned formula, DM2-7).
+
+    Identical content (case/whitespace-insensitive) converges on the same
+    fact node across record_party_fact and the NPC knowledge tools.
+    """
+    normalized = content.strip().lower()
+    return f"pfact_{hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:12]}"
+
+
+def _resolve_fact_id(fact_ref: str) -> str | None:
+    """Resolve a fact reference (existing fact id or fact content) to a fact id.
+
+    Returns the id of an existing fact — the literal id if it exists, else
+    the content-derived id if that exists — or None when neither does.
+    """
+    fact_db = storage.fact_db
+    if fact_db is None:
+        return None
+    if fact_db.get_fact(fact_ref) is not None:
+        return fact_ref
+    content_id = _content_fact_id(fact_ref)
+    if fact_db.get_fact(content_id) is not None:
+        return content_id
+    return None
+
+
 def _ingest_to_fact_graph(ingest_fn) -> None:
     """Best-effort dual-write into the fact graph.
 
@@ -4969,7 +4996,7 @@ def record_party_fact(
 
     # Deterministic content-derived id: identical content converges on the
     # same fact, and learn_fact's fact_id dedupe makes repeats a no-op.
-    fact_id = f"pfact_{hashlib.sha256(content.lower().encode('utf-8')).hexdigest()[:12]}"
+    fact_id = _content_fact_id(content)
 
     if fact_db.get_fact(fact_id) is None:
         fact_db.add_fact(
