@@ -5324,8 +5324,8 @@ def check_consistency(
 
     if not detected:
         return (
-            f"✅ No conflicts detected: '{statement}' is consistent with the "
-            "established facts."
+            f"✅ No conflicts detected for '{statement}' against the established "
+            "facts (keyword-based heuristic — not a guarantee of consistency)."
         )
 
     lines = [

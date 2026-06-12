@@ -151,3 +151,24 @@ class TestResolveContradiction:
         result = m.resolve_contradiction.fn(contradiction_id="ctr_x", strategy="bogus")
         assert "Invalid strategy" in result
         assert "retcon" in result
+
+    def test_detector_unavailable_degrades_with_guidance(self, m, storage):
+        storage._contradiction_detector = None
+        result = m.resolve_contradiction.fn(contradiction_id="ctr_x", strategy="ignore")
+        assert "unavailable" in result.lower()
+
+    def test_re_resolving_a_persisted_contradiction_updates_the_strategy(self, m, storage):
+        cid = self._detect(m, storage)
+        m.resolve_contradiction.fn(contradiction_id=cid, strategy="flag")
+        result = m.resolve_contradiction.fn(
+            contradiction_id=cid, strategy="explain", notes="A doppelganger"
+        )
+        assert "persisted" in result
+        reloaded = ContradictionDetector(
+            storage.fact_db,
+            campaign_path=storage.contradiction_detector._campaign_path,
+        )
+        contradictions = reloaded.get_all_contradictions()
+        assert len(contradictions) == 1
+        assert contradictions[0].resolution == ResolutionStrategy.EXPLAIN
+        assert contradictions[0].resolution_notes == "A doppelganger"

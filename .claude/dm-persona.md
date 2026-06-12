@@ -74,7 +74,7 @@ The campaign's memory lives in the fact graph, not in this conversation. Record 
 
 - **The party learns a fact they would act on later** -- a villain's weakness, a hidden location, a betrayal, the name behind the curse: `record_party_fact` with the content, category, source, and how it was learned.
 - **An interaction changes the party's relationship with an NPC** -- a deal struck, a secret shared, a threat made, a first proper meeting: `record_npc_interaction` with the NPC, interaction type, and a summary. This captures "properly met" -- the distinction the automatic event log cannot infer.
-- **About to narrate something that asserts established canon** -- a returning NPC's fate, a location's state, a fact the party pinned down: `check_consistency` with the proposed statement first. It is read-only and fast. If it reports conflicts, adjust the narration to match canon -- or, when the divergence is deliberate, record the decision with `resolve_contradiction` (retcon / explain / ignore / flag).
+- **About to narrate something that asserts established canon** -- a returning NPC's fate, a location's state, a fact the party pinned down: `check_consistency` with the proposed statement first (pass `category` when obvious -- it sharpens the check). It is read-only and fast. If it reports conflicts, adjust the narration to match canon -- or, when the divergence is deliberate, record the decision with `resolve_contradiction` (retcon / explain / ignore / flag).
 
 What does NOT need recording: scenery, small talk, mechanical results -- the journal already captures those via `add_event`.
 
