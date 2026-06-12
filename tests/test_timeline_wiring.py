@@ -146,3 +146,117 @@ class TestGetTimeline:
         storage._timeline_tracker = None
         result = m.get_timeline.fn()
         assert "unavailable" in result.lower()
+
+
+# ── add_event stamping hook ─────────────────────────────────────────
+
+
+class TestJournalStamping:
+    def test_add_event_stamps_timeline_event_at_current_time(self, m, storage):
+        m.set_game_time.fn(day=2, hour=5, minute=30)
+        m.add_event.fn(
+            event_type="roleplay",
+            description="The party spoke with Ismark.",
+            session_number=3,
+            location="Barovia Village",
+            characters_involved='["Ismark", "Thalion"]',
+        )
+
+        events = storage.timeline_tracker.events
+        assert len(events) == 1
+        stamped = events[0]
+        t = stamped.game_time
+        assert (t.day, t.hour, t.minute) == (2, 5, 30)
+        assert stamped.real_session == 3
+        assert stamped.location == "Barovia Village"
+        assert stamped.characters_involved == ["Ismark", "Thalion"]
+        assert stamped.description == "The party spoke with Ismark."
+
+    def test_stamp_links_to_journal_event_and_fact(self, m, storage):
+        m.add_event.fn(event_type="world", description="The mists close in.")
+        journal_event = storage.get_events(limit=1)[0]
+        stamped = storage.timeline_tracker.events[0]
+        assert stamped.id == f"tl_{journal_event.id}"
+        assert stamped.fact_ids == [f"evt_{journal_event.id}"]
+
+    def test_stamp_session_falls_back_to_game_state(self, m, storage):
+        storage.update_game_state(current_session=4)
+        m.add_event.fn(event_type="world", description="No explicit session.")
+        assert storage.timeline_tracker.events[0].real_session == 4
+
+    def test_response_mentions_timeline_stamp(self, m, storage):
+        m.set_game_time.fn(day=2, hour=5, minute=30)
+        result = m.add_event.fn(event_type="world", description="Stamped.")
+        assert "Day 2, dawn (05:30)" in result
+
+    def test_unanchored_clock_skips_stamp_and_says_so(self, m, storage):
+        _unanchor(storage)
+        result = m.add_event.fn(event_type="world", description="Too early.")
+        assert storage.timeline_tracker.event_count == 0
+        assert "unanchored" in result.lower()
+
+    def test_stamps_persist_to_disk(self, m, storage, tmp_path):
+        m.add_event.fn(event_type="world", description="Persisted.")
+        fresh = DnDStorage(data_dir=tmp_path / "data")
+        fresh.load_campaign("Timeline Test")
+        assert fresh.timeline_tracker.event_count == 1
+
+    def test_no_tracker_means_no_stamp_and_clean_response(self, m, storage):
+        storage._timeline_tracker = None
+        result = m.add_event.fn(event_type="world", description="Legacy campaign.")
+        assert "Added world event" in result
+
+    def test_temporal_conflict_warns_in_response(self, m, storage):
+        m.set_game_time.fn(day=1, hour=12)
+        m.add_event.fn(
+            event_type="roleplay",
+            description="Thalion bargains at the tavern.",
+            location="Tavern",
+            characters_involved='["Thalion"]',
+        )
+        result = m.add_event.fn(
+            event_type="exploration",
+            description="Thalion scouts the castle.",
+            location="Castle Ravenloft",
+            characters_involved='["Thalion"]',
+        )
+        assert "conflict" in result.lower()
+        # The stamp still lands — the journal write already happened
+        assert storage.timeline_tracker.event_count == 2
+
+
+# ── prose-only nudge and game-state clock ───────────────────────────
+
+
+class TestProseOnlyNudge:
+    def test_prose_only_date_update_notes_clock_did_not_advance(self, m, storage):
+        result = m.update_game_state.fn(current_date_in_game="Dawn — first morning in Barovia")
+        assert "did not advance" in result
+
+    def test_non_date_updates_get_no_nudge(self, m, storage):
+        result = m.update_game_state.fn(current_location="Barovia Village")
+        assert "did not advance" not in result
+
+    def test_no_tracker_means_no_nudge(self, m, storage):
+        storage._timeline_tracker = None
+        result = m.update_game_state.fn(current_date_in_game="Day 2")
+        assert "did not advance" not in result
+
+
+class TestGameStateClock:
+    def test_game_state_shows_timeline_clock(self, m, storage):
+        m.set_game_time.fn(day=2, hour=5, minute=30)
+        result = m.get_game_state.fn()
+        assert "Timeline Clock:" in result
+        assert "Day 2, dawn (05:30)" in result
+        assert "(anchored)" in result
+
+    def test_game_state_flags_unanchored_clock(self, m, storage):
+        _unanchor(storage)
+        result = m.get_game_state.fn()
+        assert "not anchored" in result
+
+    def test_no_tracker_omits_clock_line(self, m, storage):
+        storage._timeline_tracker = None
+        result = m.get_game_state.fn()
+        assert "Timeline Clock:" not in result

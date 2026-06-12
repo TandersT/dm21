@@ -1425,6 +1425,52 @@ def _ingest_to_fact_graph(ingest_fn) -> None:
         logger.warning(f"Fact graph ingestion failed (primary write unaffected): {e}")
 
 
+def _stamp_timeline(event: AdventureEvent) -> str:
+    """Best-effort timeline stamp for a journal write.
+
+    The journal write has already succeeded when this runs; timeline failures
+    are logged and swallowed so they never break the primary write. The stamp
+    carries the tracker's current_time at write time — the engine, not the
+    LLM, supplies the GameTime (DM2-6 date-model spike).
+
+    Returns:
+        Suffix for the tool response ("" when the timeline is unavailable).
+    """
+    try:
+        tracker = storage.timeline_tracker
+        if tracker is None:
+            return ""
+        if not tracker.anchored:
+            return (
+                "\n⏳ Not stamped on the timeline — the clock is unanchored. "
+                "Anchor it with set_game_time first."
+            )
+
+        timeline_event = TimelineEvent(
+            id=f"tl_{event.id}",
+            game_time=tracker.get_current_time(),
+            real_session=event.session_number or _current_session_number(),
+            description=event.description,
+            location=event.location,
+            characters_involved=list(event.characters_involved),
+            fact_ids=[f"evt_{event.id}"],
+        )
+        is_valid, error = tracker.validate_temporal_order(timeline_event)
+        tracker.add_event(timeline_event)
+        tracker.save()
+
+        suffix = f"\n🕐 Timeline: {format_day_relative(timeline_event.game_time)}"
+        if not is_valid:
+            suffix += (
+                f"\n⚠️ Temporal conflict: {error}. If time has passed since the "
+                "last event, advance the clock with advance_game_time."
+            )
+        return suffix
+    except Exception as e:
+        logger.warning(f"Timeline stamping failed (primary write unaffected): {e}")
+        return ""
+
+
 # NPC Management Tools
 @mcp.tool
 def create_npc(
@@ -1721,7 +1767,14 @@ def update_game_state(
         kwargs["notes"] = notes
 
     storage.update_game_state(**kwargs)
-    return "Updated game state"
+    response = "Updated game state"
+    if current_date_in_game is not None and storage.timeline_tracker is not None:
+        response += (
+            "\nNote: the timeline clock did not advance — the in-game date prose "
+            "is display-only. Use advance_game_time or set_game_time to move "
+            "structured time."
+        )
+    return response
 
 @mcp.tool
 def get_game_state() -> str:
@@ -1750,11 +1803,20 @@ def get_game_state() -> str:
 {chr(10).join(init_lines)}
 **Current Turn:** {game_state.current_turn or 'None'}"""
 
+    timeline_line = ""
+    tracker = storage.timeline_tracker
+    if tracker is not None:
+        anchored_text = "anchored" if tracker.anchored else "not anchored"
+        timeline_line = (
+            f"\n**Timeline Clock:** "
+            f"{format_day_relative(tracker.get_current_time())} ({anchored_text})"
+        )
+
     state_info = f"""**Game State**
 **Campaign:** {game_state.campaign_name}
 **Session:** {game_state.current_session}
 **Location:** {game_state.current_location or 'Unknown'}
-**Date (In-Game):** {game_state.current_date_in_game or 'Unknown'}
+**Date (In-Game):** {game_state.current_date_in_game or 'Unknown'}{timeline_line}
 **Party Level:** {game_state.party_level}
 **Party Funds:** {game_state.party_funds}
 **In Combat:** {'Yes' if game_state.in_combat else 'No'}
@@ -2966,7 +3028,7 @@ def add_event(
             default_session=_current_session_number(),
         )
     )
-    return f"Added {event_type.lower()} event: '{resolved_title}'"
+    return f"Added {event_type.lower()} event: '{resolved_title}'" + _stamp_timeline(event)
 
 @mcp.tool
 def get_events(
