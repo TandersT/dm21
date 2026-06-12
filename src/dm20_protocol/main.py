@@ -1364,6 +1364,44 @@ def delete_character(
     storage.remove_character(name_or_id)
     return f"🗑️ Character '{char_name}' has been deleted from the campaign."
 
+# ----------------------------------------------------------------------
+# Fact Graph Dual-Write Helpers
+# ----------------------------------------------------------------------
+
+def _current_session_number() -> int:
+    """Current game session for fact attribution (always >= 1)."""
+    game_state = storage.get_game_state()
+    return max(1, game_state.current_session) if game_state else 1
+
+
+def _registered_npcs_by_name() -> dict[str, NPC]:
+    """Registered NPCs keyed by name, for met-tracking in event ingestion."""
+    return {npc.name: npc for npc in storage.list_npcs_detailed()}
+
+
+def _ingest_to_fact_graph(ingest_fn) -> None:
+    """Best-effort dual-write into the fact graph.
+
+    The journal/entity write has already succeeded when this runs; fact graph
+    failures are logged and swallowed so they never break the primary write.
+
+    Args:
+        ingest_fn: Callable receiving a FactIngest adapter; should perform the
+            ingestion calls. Persistence (one save) is handled here.
+    """
+    try:
+        fact_db = storage.fact_db
+        if fact_db is None:
+            return
+        from .consistency.fact_ingest import FactIngest
+
+        ingest = FactIngest(fact_db, storage.npc_knowledge_tracker)
+        ingest_fn(ingest)
+        ingest.save()
+    except Exception as e:
+        logger.warning(f"Fact graph ingestion failed (primary write unaffected): {e}")
+
+
 # NPC Management Tools
 @mcp.tool
 def create_npc(
@@ -1389,6 +1427,9 @@ def create_npc(
     )
 
     storage.add_npc(npc)
+    _ingest_to_fact_graph(
+        lambda ingest: ingest.ingest_npc(npc, session=_current_session_number())
+    )
     return f"Created NPC '{npc.name}'"
 
 @mcp.tool
@@ -1445,6 +1486,9 @@ def create_location(
     )
 
     storage.add_location(location)
+    _ingest_to_fact_graph(
+        lambda ingest: ingest.ingest_location(location, session=_current_session_number())
+    )
     return f"Created location '{location.name}' ({location.location_type})"
 
 @mcp.tool
@@ -1546,6 +1590,9 @@ def create_quest(
     )
 
     storage.add_quest(quest)
+    _ingest_to_fact_graph(
+        lambda ingest: ingest.ingest_quest(quest, session=_current_session_number())
+    )
     return f"Created quest '{quest.title}'"
 
 @mcp.tool
@@ -1567,6 +1614,10 @@ def update_quest(
             quest.completed_objectives.append(completed_objective)
             storage._save_campaign()  # Direct save since we modified the object
 
+    # Re-ingest so the quest fact's resolution tags reflect the new status
+    _ingest_to_fact_graph(
+        lambda ingest: ingest.ingest_quest(quest, session=_current_session_number())
+    )
     return f"Updated quest '{title}'"
 
 @mcp.tool
@@ -2734,6 +2785,13 @@ def add_event(
     )
 
     storage.add_event(event)
+    _ingest_to_fact_graph(
+        lambda ingest: ingest.ingest_event(
+            event,
+            npcs_by_name=_registered_npcs_by_name(),
+            default_session=_current_session_number(),
+        )
+    )
     return f"Added {event_type.lower()} event: '{resolved_title}'"
 
 @mcp.tool
@@ -4534,7 +4592,7 @@ def validate_pack(
 
 
 # Party Knowledge Tool
-from .consistency.party_knowledge import PartyKnowledge, AcquisitionMethod, PARTY_KNOWN_TAG
+from .consistency.party_knowledge import AcquisitionMethod, PARTY_KNOWN_TAG
 
 
 @mcp.tool
@@ -4556,16 +4614,12 @@ def party_knowledge(
     if not campaign:
         return "No active campaign. Load or create a campaign first."
 
-    # Get campaign directory path
-    campaign_dir = data_path / "campaigns" / campaign.name
-
-    # Initialize FactDatabase and PartyKnowledge
-    from .claudmaster.consistency.fact_database import FactDatabase
-    try:
-        fact_db = FactDatabase(campaign_dir)
-        pk = PartyKnowledge(fact_db, campaign_dir)
-    except Exception as e:
-        return f"Error initializing party knowledge: {e}"
+    pk = storage.party_knowledge
+    if pk is None:
+        return (
+            "Party knowledge unavailable: the fact graph could not be loaded "
+            "for this campaign (split-format campaigns only)."
+        )
 
     # Apply filters
     if source_filter:
@@ -4613,6 +4667,76 @@ def party_knowledge(
         lines.append("")
 
     return "\n".join(lines)
+
+
+@mcp.tool
+def sync_facts() -> str:
+    """Backfill the fact graph from the existing journal and campaign entities.
+
+    Replays all adventure log events and sweeps the current campaign's NPCs,
+    locations, and quests through the same ingestion pipeline used by the
+    live dual-write. Deterministic fact ids make this idempotent: re-running
+    it (or running it after dual-write has already populated the graph)
+    converges without creating duplicates.
+    """
+    campaign = storage.get_current_campaign()
+    if not campaign:
+        return "No active campaign. Load or create a campaign first."
+
+    fact_db = storage.fact_db
+    if fact_db is None:
+        return (
+            "Fact graph unavailable: it could not be loaded for this campaign "
+            "(split-format campaigns only). Cannot sync facts."
+        )
+
+    from .consistency.fact_ingest import FactIngest
+
+    ingest = FactIngest(fact_db, storage.npc_knowledge_tracker)
+    facts_before = len(fact_db.facts)
+    npcs_by_name = _registered_npcs_by_name()
+    current_session = _current_session_number()
+
+    def _interaction_count() -> int:
+        tracker = storage.npc_knowledge_tracker
+        if tracker is None:
+            return 0
+        return sum(len(tracker.get_interactions(npc.id)) for npc in npcs_by_name.values())
+
+    interactions_before = _interaction_count()
+
+    # Replay the journal in chronological order. Events without a session get
+    # session 1 — deterministic from the journal alone, so replays converge;
+    # merge-preserve keeps the attribution of facts the dual-write already made.
+    events = sorted(storage.get_events(), key=lambda e: e.timestamp)
+    for event in events:
+        ingest.ingest_event(event, npcs_by_name=npcs_by_name, default_session=1)
+
+    # Sweep current campaign entities
+    npcs = storage.list_npcs_detailed()
+    locations = storage.list_locations_detailed()
+    quests = [q for q in (storage.get_quest(t) for t in storage.list_quests()) if q]
+    for npc in npcs:
+        ingest.ingest_npc(npc, session=current_session)
+    for location in locations:
+        ingest.ingest_location(location, session=current_session)
+    for quest in quests:
+        ingest.ingest_quest(quest, session=current_session)
+
+    ingest.save()
+    facts_after = len(fact_db.facts)
+    interactions_recorded = _interaction_count() - interactions_before
+
+    return (
+        f"✅ Fact sync complete for campaign '{campaign.name}'.\n"
+        f"- Events replayed: {len(events)}\n"
+        f"- Entities swept: {len(npcs)} NPCs, {len(locations)} locations, {len(quests)} quests\n"
+        f"- Facts: {facts_before} → {facts_after} (+{facts_after - facts_before})\n"
+        f"- NPC interactions recorded: {interactions_recorded}\n\n"
+        f"⚠️ The adventure log is global and has no campaign attribution — events "
+        f"from other campaigns sharing this data directory may have been ingested "
+        f"into this campaign's fact graph."
+    )
 
 
 # --------------------------------------------------------------------------
